@@ -4,11 +4,13 @@ ______________________
 __** INSTRUCTIONS **__
 ======================
 
-(1) Convert CSV files from Coinbase [Pro], Kraken, Strike, & CashApp into *1* MASTER .XLSX file...
+(1) Convert CSV files from Coinbase [Pro], Kraken, Strike, & CashApp into .XLSX files (later to be auto-merged into *1* MASTER .xlsx file)...
 
 (2) After converting the CSVs into XLSX spreadsheets, place them into the same directory as these Python scripts, and then run them 1 (merge txs) and 2 (calculate gains)....  Prepare to be amazed at the 2 spreadsheets it creates.  The 2nd spreadsheet has several sheets with a ton of useful data, identifying which tax lot is sold for each accounting method, yearly gains in different categories, current holdings stats, detailed list of all sales, etc.
 
-(3) If you need to add some transactions in there between Step 1 (merging the various .XLSX files (after you convert them from .CSV of course!) and Step 2, that's obviously no problem... just add some data to the end of the Master Sheet... fill out as much as you possibly can... and the 2nd script should be able to fill in the blanks.
+(3) You will obviously need Python installed with "pip" to install some dependencies.  Best I can tell the required ones can be installed with this one command:  [" pip install pandas openpyxl requests "]
+
+(4) If you need to add some transactions in there between Step 1 (merging the various .XLSX files (after you convert them from .CSV of course!) and Step 2, that's obviously no problem... just add some data to the end of the Master Sheet... fill out as much as you possibly can... and the 2nd script should be able to fill in the blanks.
 
 
 __________________
