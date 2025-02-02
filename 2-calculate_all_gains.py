@@ -23,7 +23,7 @@ import json                                     # For reading/writing cache file
 from pathlib import Path                        # For handling file paths
 import openpyxl                                 # For Excel file operations
 
-# Important date constant: When LUNA became LUNC (May 28, 2022)
+# Important date when LUNA became LUNC (Luna Classic)
 LUNA_TRANSITION_DATE = datetime(2022, 5, 28)
 
 # Important date constant: When NU stopped working on Coinbase (Feb 6, 2023). 1 NU is worth 3.26 T
@@ -41,7 +41,7 @@ class ErrorOnlyFileHandler(logging.FileHandler):
             self.error_occurred = True
             super().emit(record)
 
-handler = ErrorOnlyFileHandler('all_crypto_profit_and_loss-errors.log')
+handler = ErrorOnlyFileHandler('ALL-crypto-profit-and-loss-errors.log')
 handler.setLevel(logging.ERROR)
 handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
@@ -994,6 +994,9 @@ class TransactionProcessor:
                     'cost_basis': abs(Decimal(str(row['Total USD']))),  # Use Total USD from input file
                 })
             
+        except InsufficientLotsError as e:
+            # Add the error here instead
+            self.all_errors.append(e.args[0])
         except Exception as e:
             log_error(f"Error processing transaction: {row['ID']}")
             log_error(f"Error details: {str(e)}\n")
@@ -1012,7 +1015,10 @@ class TransactionProcessor:
         df = df.sort_values('Timestamp')
         
         # Calculate gains first to get lot assignments
-        gains_df = calculate_gains(df, self.accounting_method)  # Pass the accounting method
+        gains_df, validation_errors = calculate_gains(df, self.accounting_method)
+        
+        # Add validation errors to all_errors
+        self.all_errors.extend(validation_errors)
         
         # Process each transaction
         for _, row in df.iterrows():
@@ -1212,7 +1218,7 @@ def generate_excel_report(yearly_data: Dict, processor: TransactionProcessor, su
     #Generate Excel report with yearly summaries and current holdings
 
     try:
-        with pd.ExcelWriter(f'all_crypto_profit_and_loss{suffix}.xlsx', engine='openpyxl') as writer:
+        with pd.ExcelWriter(f'ALL-crypto-profit-and-loss{suffix}.xlsx', engine='openpyxl') as writer:
             # Add accounting method info sheet
             method_info = pd.DataFrame([{
                 'Accounting Method': processor.accounting_method.value,
@@ -1486,7 +1492,7 @@ def generate_excel_report(yearly_data: Dict, processor: TransactionProcessor, su
             
             print("File SAVED AS...")
             print("    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-            print(f"    all_crypto_profit_and_loss{suffix}.xlsx")
+            print(f"    ALL-crypto-profit-and-loss{suffix}.xlsx")
             print("    ~~~~~~~~~~~~~~~~~~~~~~~~~~~****~~~~~\n")
         
     except Exception as e:
@@ -1592,25 +1598,49 @@ def calculate_gains(transactions_df: pd.DataFrame, accounting_method: Accounting
         # Ensure Lot ID is string type
         df['Lot ID'] = df['Lot ID'].astype(str)
         
-        # Convert numeric columns to Decimal, preserving all significant digits
+        # Convert numeric columns to Decimal, preserving ALL significant digits
+        # Don't normalize/round crypto amounts to maintain maximum precision
         df['Amount'] = df['Amount'].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal('0'))
         
-        # For USD values: normalize to 2 decimal places
-        df['Subtotal'] = df['Subtotal'].apply(lambda x: normalize_usd(x) if pd.notna(x) else Decimal('0'))
-        df['Fee'] = df['Fee'].apply(lambda x: normalize_usd(x) if pd.notna(x) else Decimal('0'))
+        # For USD values, preserve full precision during calculations
+        df['Total USD'] = df['Total USD'].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal('0'))
+        df['Subtotal'] = df['Subtotal'].apply(lambda x: Decimal(str(x)) if pd.notna(x) else Decimal('0'))
+        
+        # Pre-calculate and validate total amounts for each asset
+        asset_totals = defaultdict(Decimal)
+        for idx, row in df.iterrows():
+            # Skip USD deposits/withdrawals, Exchange Withdrawals, Pro Withdrawals, and Send transactions
+            if (row['Asset'] == 'USD' and row['Type'].lower() in ['deposit', 'withdrawal']) or \
+               'exchange withdrawal' in row['Type'].lower() or \
+               'pro withdrawal' in row['Type'].lower() or \
+               'send' in row['Type'].lower():
+                continue
+                
+            asset_totals[row['Asset']] += df['Amount'][idx]
+        
+        # Collect negative balance warnings
+        validation_errors = []
+        for asset, total in asset_totals.items():
+            if total < 0 and asset != 'USD':
+                validation_errors.append({
+                    'timestamp': None,
+                    'asset': asset,
+                    'error': f'Negative total balance: {total}',
+                    'transaction': None
+                })
         
         sales = []
         lots = defaultdict(list)
         
         # Process transactions chronologically
-        for idx, row in df.sort_values('Timestamp').iterrows():
+        for idx, row in df.sort_values(['Timestamp', 'Type']).iterrows():
             asset = row['Asset']
             amount = df['Amount'][idx]
             
             if amount > 0:  # Buy/receive
                 if row['Lot ID']:  # Only track if it has a lot ID
-                    subtotal = df['Subtotal'][idx]
-                    basis_per_unit = (subtotal / amount) if amount != 0 else Decimal('0')
+                    total_cost = abs(df['Total USD'][idx])  # Use absolute value for cost basis
+                    basis_per_unit = (total_cost / amount) if amount != 0 else Decimal('0')
                     lots[asset].append({
                         'lot_id': row['Lot ID'],
                         'remaining': amount,
@@ -1619,19 +1649,24 @@ def calculate_gains(transactions_df: pd.DataFrame, accounting_method: Accounting
                         'basis_per_unit': basis_per_unit
                     })
             elif amount < 0:  # Sell/send
+                # Skip certain transaction types for lot validation
+                if ('withdrawal' in row['Type'].lower() or
+                    'send' in row['Type'].lower()):
+                    continue
+
                 remaining_sale = abs(amount)
                 used_lots = []
                 
                 # Sort lots once based on accounting method
                 if accounting_method == AccountingMethod.FIFO:
-                    lots[asset].sort(key=lambda x: (x['timestamp'], x['basis_per_unit']))
+                    lots[asset].sort(key=lambda x: (x['timestamp'], Decimal(str(x['basis_per_unit']))))
                 elif accounting_method == AccountingMethod.LIFO:
-                    lots[asset].sort(key=lambda x: (-x['timestamp'].timestamp(), x['basis_per_unit']))
+                    lots[asset].sort(key=lambda x: (-x['timestamp'].timestamp(), Decimal(str(x['basis_per_unit']))))
                 elif accounting_method == AccountingMethod.HIFO:
                     lots[asset].sort(key=lambda x: (-Decimal(str(x['basis_per_unit'])), x['timestamp']))
                 elif accounting_method == AccountingMethod.LOFO:
                     lots[asset].sort(key=lambda x: (Decimal(str(x['basis_per_unit'])), x['timestamp']))
-                
+
                 # Process lots in the sorted order
                 for lot in lots[asset]:
                     if remaining_sale <= 0:
@@ -1649,18 +1684,21 @@ def calculate_gains(transactions_df: pd.DataFrame, accounting_method: Accounting
                             'purchase_date': lot['timestamp']
                         })
                 
-                if used_lots:                  
+                if used_lots:
+                    # Use Subtotal for sale price (before fees)
+                    sale_price = abs(row['Subtotal'] / amount) if amount != 0 else Decimal('0')
+                    
                     # Add details for each lot used
                     for lot in used_lots:
                         sale_detail = {
                             'Sale Date': row['Timestamp'],
                             'Purchase Date': lot['purchase_date'],
                             'Asset': asset,
-                            'Lot ID': str(lot['lot_id']),  # Convert to string
+                            'Lot ID': str(lot['lot_id']),
                             'Amount Sold': lot['amount_sold'],
                             'Cost Basis Per Unit': lot['basis_per_unit'],
-                            'Sale Price Per Unit': normalize_usd(abs(row['Subtotal'] / amount)) if amount != 0 else 0,
-                            'Sale ID': str(row['ID'])  # Convert to string
+                            'Sale Price Per Unit': sale_price,
+                            'Sale ID': str(row['ID'])
                         }
                         sales.append(sale_detail)
         
@@ -1668,20 +1706,26 @@ def calculate_gains(transactions_df: pd.DataFrame, accounting_method: Accounting
         if sales:
             sales_df = pd.DataFrame(sales)
             
-            # Calculate gains for each sale
+            # Calculate final values, maintaining precision until the last step
+            # Only normalize USD amounts at the very end
             sales_df['Cost Basis'] = sales_df.apply(
-                lambda x: normalize_usd(x['Amount Sold'] * x['Cost Basis Per Unit']),
+                lambda x: normalize_usd(
+                    Decimal(str(x['Amount Sold'])) * Decimal(str(x['Cost Basis Per Unit']))
+                ),
                 axis=1
             )
             sales_df['Proceeds'] = sales_df.apply(
-                lambda x: normalize_usd(x['Amount Sold'] * x['Sale Price Per Unit']),
+                lambda x: normalize_usd(
+                    Decimal(str(x['Amount Sold'])) * Decimal(str(x['Sale Price Per Unit']))
+                ),
                 axis=1
             )
+            # Calculate Gain/Loss after normalizing the components
             sales_df['Gain/Loss'] = sales_df['Proceeds'] - sales_df['Cost Basis']
             
-            return sales_df
+            return sales_df, validation_errors
         
-        return pd.DataFrame()  # Return empty DataFrame if no sales
+        return pd.DataFrame(), validation_errors  # Return empty DataFrame if no sales
         
     except Exception as e:
         print(f"Error calculating gains: {str(e)}")
@@ -1922,10 +1966,12 @@ def validate_accounting_method_consistency(df: pd.DataFrame, method: AccountingM
 
 def compare_all_method_outputs():
     # Compare outputs from all accounting methods and highlight differences
+    # Matches rows by Asset column when comparing across methods, except for
+    # Transfers and Sale Details sheets which compare row by row
 
     methods = [m.name for m in AccountingMethod]
     workbooks = {
-        method: openpyxl.load_workbook(f'all_crypto_profit_and_loss-{method}.xlsx')
+        method: openpyxl.load_workbook(f'ALL-crypto-profit-and-loss-{method}.xlsx')
         for method in methods
     }
     
@@ -1938,27 +1984,99 @@ def compare_all_method_outputs():
                 continue
             
             ws = wb[sheet_name]
-            max_rows = max(ws.max_row for wb in workbooks.values() for ws in [wb[sheet_name]] if sheet_name in wb.sheetnames)
-            max_cols = max(ws.max_column for wb in workbooks.values() for ws in [wb[sheet_name]] if sheet_name in wb.sheetnames)
             
-            # Compare each cell
-            for row in range(2, max_rows + 1):  # Skip header row
+            # Handle Transfers and Sale Details sheets with original row-by-row comparison
+            if sheet_name in ['Transfers', 'Sale Details']:
+                max_rows = max(ws.max_row for wb in workbooks.values() for ws in [wb[sheet_name]] if sheet_name in wb.sheetnames)
+                max_cols = max(ws.max_column for wb in workbooks.values() for ws in [wb[sheet_name]] if sheet_name in wb.sheetnames)
+                
+                # Compare each cell row by row
+                for row in range(2, max_rows + 1):  # Skip header row
+                    for col in range(1, max_cols + 1):
+                        values = set()
+                        
+                        # Collect values from all methods
+                        for m in methods:
+                            if sheet_name in workbooks[m].sheetnames:
+                                cell = workbooks[m][sheet_name].cell(row=row, column=col)
+                                if cell.value is not None:
+                                    try:
+                                        if isinstance(cell.value, (int, float, Decimal)):
+                                            values.add(float(cell.value))
+                                        else:
+                                            values.add(str(cell.value))
+                                    except (ValueError, TypeError):
+                                        values.add(str(cell.value))
+                        
+                        # If values differ, highlight cells in all workbooks
+                        if len(values) > 1:
+                            yellow_fill = openpyxl.styles.PatternFill(
+                                start_color='FFFF00',
+                                end_color='FFFF00',
+                                fill_type='solid'
+                            )
+                            
+                            for m in methods:
+                                if sheet_name in workbooks[m].sheetnames:
+                                    cell = workbooks[m][sheet_name].cell(row=row, column=col)
+                                    cell.fill = yellow_fill
+                continue  # Move to next sheet
+            
+            # For all other sheets, compare by Asset
+            # Find the Asset column index (usually column A)
+            header_row = next(ws.rows)
+            asset_col_idx = None
+            for idx, cell in enumerate(header_row, 1):
+                if cell.value == 'Asset':
+                    asset_col_idx = idx
+                    break
+            
+            if asset_col_idx is None:
+                continue
+                
+            # Create a mapping of Asset to row number for each method
+            asset_row_maps = {}
+            for m in methods:
+                if sheet_name in workbooks[m].sheetnames:
+                    curr_ws = workbooks[m][sheet_name]
+                    asset_row_maps[m] = {}
+                    for row in range(2, curr_ws.max_row + 1):  # Skip header row
+                        asset_cell = curr_ws.cell(row=row, column=asset_col_idx)
+                        if asset_cell.value:
+                            asset_row_maps[m][asset_cell.value] = row
+            
+            # Get all unique assets across all methods
+            all_assets = set()
+            for row_map in asset_row_maps.values():
+                all_assets.update(row_map.keys())
+            
+            # Compare each asset's data across methods
+            for asset in all_assets:
+                # Get the maximum number of columns across all methods
+                max_cols = max(
+                    workbooks[m][sheet_name].max_column 
+                    for m in methods 
+                    if sheet_name in workbooks[m].sheetnames
+                )
+                
+                # Compare each column for this asset
                 for col in range(1, max_cols + 1):
                     values = set()
                     
-                    # Collect values from all methods
+                    # Collect values from all methods for this asset and column
                     for m in methods:
                         if sheet_name in workbooks[m].sheetnames:
-                            cell = workbooks[m][sheet_name].cell(row=row, column=col)
-                            if cell.value is not None:
-                                # Convert numeric values to float for comparison
-                                try:
-                                    if isinstance(cell.value, (int, float, Decimal)):
-                                        values.add(float(cell.value))
-                                    else:
+                            if asset in asset_row_maps[m]:
+                                row = asset_row_maps[m][asset]
+                                cell = workbooks[m][sheet_name].cell(row=row, column=col)
+                                if cell.value is not None:
+                                    try:
+                                        if isinstance(cell.value, (int, float, Decimal)):
+                                            values.add(float(cell.value))
+                                        else:
+                                            values.add(str(cell.value))
+                                    except (ValueError, TypeError):
                                         values.add(str(cell.value))
-                                except (ValueError, TypeError):
-                                    values.add(str(cell.value))
                     
                     # If values differ, highlight cells in all workbooks
                     if len(values) > 1:
@@ -1970,12 +2088,14 @@ def compare_all_method_outputs():
                         
                         for m in methods:
                             if sheet_name in workbooks[m].sheetnames:
-                                cell = workbooks[m][sheet_name].cell(row=row, column=col)
-                                cell.fill = yellow_fill
+                                if asset in asset_row_maps[m]:
+                                    row = asset_row_maps[m][asset]
+                                    cell = workbooks[m][sheet_name].cell(row=row, column=col)
+                                    cell.fill = yellow_fill
     
     # Save all workbooks
     for method, wb in workbooks.items():
-        wb.save(f'all_crypto_profit_and_loss-{method}.xlsx')
+        wb.save(f'ALL-crypto-profit-and-loss-{method}.xlsx')
 
 def format_holdings_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # Format the holdings DataFrame with proper column order and formatting
@@ -2207,6 +2327,62 @@ def log_error(message: str, print_to_screen: bool = True) -> None:
     if print_to_screen:
         print(f"ERROR: {message}")
 
+def report_issues(all_issues: List[Dict]) -> None:
+    """Report any issues found during processing"""
+    if all_issues:
+        print("\n\n################################################")
+        print("************** ISSUES DETECTED *****************")
+        print("################################################")
+        print("")
+
+        for method_issues in all_issues:
+            print("-" * (len(method_issues['method']) + 1))            
+            print(f"{method_issues['method']}:")
+            print("-" * (len(method_issues['method']) + 1))
+            
+            if method_issues['errors']:
+                for error in method_issues['errors']:
+                    tx = error.get('transaction', {})
+                    
+                    # Parse the error message to extract Need/Have values
+                    error_msg = error['error']
+                    if 'Insufficient lots' in error_msg:
+                        print(f"ERROR: {error['error']}:")
+                        print(f"ERROR: Need: {tx.get('Need')}, Have: {tx.get('Have')}")
+                        print(f"ERROR: Error processing transaction: {tx.get('ID')} at {error['timestamp']}")
+                        print(f"ERROR: Error details: {error['error']}")
+                        print("")
+            
+            if method_issues['proceeds_mismatches']:
+                print("\nProceeds mismatches found:")
+                for mismatch in method_issues['proceeds_mismatches']:
+                    print(f"\n- {mismatch['symbol']}:")
+                    print(f"  Time: {mismatch['timestamp']}")
+                    print(f"  Difference: ${mismatch['difference']:.2f}")
+                
+                for detail in method_issues['mismatch_details']:
+                    print(f"\nDetails for {detail['symbol']} at {detail['timestamp']}:")
+                    print(f"  Amount: {detail['amount']}")
+                    print(f"  Expected: ${detail['expected_proceeds']:.2f}")
+                    print(f"  Actual: ${detail['actual_proceeds']:.2f}")
+                    print(f"  Difference: ${detail['difference']:.2f}")
+                    
+                    if detail.get('lot_details'):
+                        print("\n  Lots used:")
+                        for lot in detail['lot_details']:
+                            print(f"    Amount: {lot['amount']}")
+                            print(f"    Proceeds: ${lot['proceeds']:.2f}")
+                            print(f"    Cost basis: ${lot['cost_basis']:.2f}")
+                            print("    ---")
+        
+        print("\n\n*************************************************************")
+        print("See full details in the 'ALL-crypto-profit-and-loss-errors.log' file")
+        print("*************************************************************\n")
+    else:
+        print("\n\n**********************************")
+        print("No issues found during processing.")
+        print("**********************************\n")
+
 def main():
     try:
         print("\n~~~~~~~~~~~~~~~~~~~~~~~~~")
@@ -2287,57 +2463,8 @@ def main():
             print("\nComparison complete -  Differences highlighted in YELLOW")
             print("                                                  ******")
 
-        # After all processing is done, show comprehensive issues summary
-        if all_issues:
-            print("\n\n################################################")
-            print("************** ISSUES DETECTED *****************")
-            print("################################################")
-            
-            for method_issues in all_issues:
-                method_name = method_issues['method']
-                print("\n")
-                print("=" * (18 + len(method_name)))
-                print(f"Issues found in {method_name}:")
-                print("=" * (18 + len(method_name)))
-                
-                if method_issues['errors']:
-                    print("\n~~~~~~~")
-                    print("ERRORS:")
-                    print("~~~~~~~")
-                    for error in method_issues['errors']:
-                        print(f"- {error['asset']}: {error['error']}")
-                
-                if method_issues['proceeds_mismatches']:
-                    print("##########################")
-                    print("\nProceeds mismatches found:")
-                    print("##########################")
-                    for mismatch in method_issues['proceeds_mismatches']:
-                        print(f"- {mismatch['symbol']}: Difference of ${mismatch['difference']:.2f} "
-                              f"at {mismatch['timestamp']}")
-                    
-                    # Show detailed mismatch info if any
-                    for mismatch_detail in method_issues['mismatch_details']:
-                        print(f"\nProceeds mismatch details for {mismatch_detail['symbol']}:")
-                        print(f"Sale timestamp: {mismatch_detail['timestamp']}")
-                        print(f"Sale amount: {mismatch_detail['amount']}")
-                        print(f"Expected total proceeds: {mismatch_detail['expected_proceeds']}")
-                        print(f"Actual sale proceeds: {mismatch_detail['actual_proceeds']}")
-                        print(f"Difference: {mismatch_detail['difference']}")
-                        print("\nLot details used in this sale:")
-                        for lot in mismatch_detail['lot_details']:
-                            print(f"  Lot amount: {lot['amount']}")
-                            print(f"  Lot proceeds: {lot['proceeds']}")
-                            print(f"  Lot cost basis: {lot['cost_basis']}")
-                            print("  ---")
-                        print(f"\nWARNING: Proceeds mismatch in {mismatch_detail['symbol']} long-term sale")
-            
-            print("\n\n*************************************************************")
-            print("See full details in the 'all_crypto_profit_and_loss-errors.log' file")
-            print("*************************************************************\n")
-        else:
-            print("\n\n**********************************")
-            print("No issues found during processing.")
-            print("**********************************\n")
+        # Report any issues found during processing
+        report_issues(all_issues)
 
     except Exception as e:
         log_error(f"Error in main execution: {str(e)}")

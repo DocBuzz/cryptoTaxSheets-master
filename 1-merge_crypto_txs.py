@@ -1,8 +1,12 @@
+# This script combines cryptocurrency transactions from multiple exchanges into one master file
+# It handles transactions from Coinbase, Coinbase Pro, Kraken, Strike, and CashApp
+
 # CryptoCompare API key - https://min-api.cryptocompare.com
 # Optional: Script will use daily historical prices if no API key is provided
 # With API key: Script can fetch minute-level historical prices (last 7 days only)
 CRYPTOCOMPARE_API_KEY = 'YOUR-API-KEY-HERE'
 
+# Import required Python libraries
 import pandas as pd
 import glob
 from datetime import datetime, timedelta
@@ -17,17 +21,38 @@ import openpyxl
 import openpyxl.utils
 import openpyxl.styles
 
-LUNA_TRANSITION_DATE = datetime(2022, 5, 28)  # LUNA -> LUNC transition date
+# Important date when LUNA became LUNC (Luna Classic)
+LUNA_TRANSITION_DATE = datetime(2022, 5, 28)
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filename='crypto_transactions_merge.log'
-)
+# Set up logging to only create the log file if an error is actually logged
+class ErrorOnlyFileHandler(logging.FileHandler):
+    # This special file handler waits until an actual error occurs before creating the log file
+    def __init__(self, filename, mode='a', encoding=None, delay=True):  # Set delay=True
+        super().__init__(filename, mode, encoding, delay)
+        self.error_occurred = False
+
+    def emit(self, record):
+        if record.levelno >= logging.ERROR:  # Only handle ERROR or higher
+            self.error_occurred = True
+            super().emit(record)
+
+handler = ErrorOnlyFileHandler('ALL-MASTER-crypto-transactions.log')
+handler.setLevel(logging.ERROR)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+logger = logging.getLogger()
+logger.setLevel(logging.ERROR)
+logger.addHandler(handler)
+
+def log_error(message: str, print_to_screen: bool = True) -> None:
+    # Helper function to handle error logging
+    logging.getLogger().error(message)
+    if print_to_screen:
+        print(f"ERROR: {message}")
 
 def load_price_cache():
-    """Load historical price cache from JSON file"""
+    # Load previously fetched cryptocurrency prices from the "price_cache.json" cache file.
+    # Returns an empty dictionary if no cache exists or if there's an error reading it.
     cache_file = Path('price_cache.json')
     if cache_file.exists():
         try:
@@ -38,7 +63,7 @@ def load_price_cache():
     return {}
 
 def save_price_cache(cache):
-    """Save historical price cache to JSON file"""
+    # Save fetched cryptocurrency prices to the "price_cache.json" cache file.
     try:
         with open('price_cache.json', 'w') as f:
             json.dump(cache, f)
@@ -49,9 +74,11 @@ def save_price_cache(cache):
 price_cache = load_price_cache()
 
 def safe_concat(dfs: list, columns: list, **kwargs) -> pd.DataFrame:
-    """Safely concatenate DataFrames ensuring all columns exist"""
+    # Combine multiple data files while ensuring all required columns exist
+    # Handles missing columns by adding them with appropriate default values
     if not dfs:
         return pd.DataFrame(columns=columns)
+
     
     # Ensure all DataFrames have all columns
     normalized_dfs = []
@@ -87,11 +114,15 @@ def safe_concat(dfs: list, columns: list, **kwargs) -> pd.DataFrame:
     return pd.concat(normalized_dfs, **kwargs)
 
 def load_coinbase_transactions():
-    """Load and process Coinbase transaction history"""
+    # Load and process Coinbase transactions, handling special cases like:
+    # - Convert transactions (split into buy/sell pairs)
+    # - Staking rewards (renamed from Inflation Reward)
+    # - Learning rewards and other income types
     try:
         # Find Coinbase transaction files
         excel_files = glob.glob("*.xlsx")
         transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
+        
         coinbase_files = [
             f for f in excel_files 
             if 'coinbase' in f.lower() 
@@ -188,7 +219,7 @@ def load_coinbase_transactions():
         
         # Add the new buy rows to the DataFrame
         if new_rows:
-            df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+            df = safe_concat([df, pd.DataFrame(new_rows)], columns=df.columns, ignore_index=True)
         
         # Rename "Inflation Reward" to "Staking Income"
         df.loc[df['Type'] == 'Inflation Reward', 'Type'] = 'Staking Income'
@@ -205,7 +236,8 @@ def load_coinbase_transactions():
         return pd.DataFrame()
 
 def load_coinbase_pro_transactions():
-    """Load and process Coinbase Pro transaction history"""
+    # Load and process Coinbase Pro trades, matching fills with their orders
+    # Handles both buy and sell transactions from the fills report
     try:
         dfs = []
         excel_files = glob.glob("*.xlsx")
@@ -268,7 +300,8 @@ def load_coinbase_pro_transactions():
         return pd.DataFrame()
 
 def load_kraken_transactions():
-    """Load and process Kraken ledger and trades data"""
+    # Load and combine Kraken ledger entries with trade history
+    # Matches trades with their orders and handles various transaction types
     try:
         excel_files = glob.glob("*.xlsx")
         
@@ -278,7 +311,7 @@ def load_kraken_transactions():
         
         if not ledger_files:
             print("Warning: No Kraken ledger file found. Skipping Kraken transactions.")
-            return pd.DataFrame(columns=['ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 'Total USD', 'Fee', 'Spot Price', 'Notes'])
+            return pd.DataFrame()
             
         ledger_file = ledger_files[0]
         print(f"  **  Loading Kraken ledger...\n")
@@ -290,7 +323,9 @@ def load_kraken_transactions():
         trades_files = [f for f in excel_files if any(pattern in f.lower() for pattern in trades_patterns)]
         
         trades_df = pd.DataFrame()
-        if trades_files:
+        if not trades_files:
+            print("Warning: No Kraken trades file found. Proceeding with ledger only.")
+        elif trades_files:
             trades_file = trades_files[0]
             print(f"\n  **  Loading Kraken trades...\n")
             print(f" {trades_file}")
@@ -489,11 +524,13 @@ def load_kraken_transactions():
         return pd.DataFrame(columns=['ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 'Total USD', 'Fee', 'Spot Price', 'Notes'])
 
 def load_strike_transactions():
-    """Load and process Strike transaction history"""
+    # Load and process Strike Bitcoin transactions
+    # Handles buys, sells, and withdrawals from Strike's transaction report
     try:
         # Find Strike transaction files
         excel_files = glob.glob("*.xlsx")
         transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
+
         strike_files = [
             f for f in excel_files 
             if 'strike' in f.lower() 
@@ -571,11 +608,6 @@ def load_strike_transactions():
             # Add empty Notes column
             df['Notes'] = ''
             
-            # Clean up any remaining NaN values
-            numeric_columns = ['Amount', 'Total USD', 'Fee', 'Spot Price', 'Subtotal']
-            for col in numeric_columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            
             # Select and reorder columns
             result_df = df[[
                 'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
@@ -595,9 +627,11 @@ def load_strike_transactions():
         return pd.DataFrame()
 
 def load_cashapp_transactions():
-    """Load and process CashApp transaction history"""
+    # Load and process CashApp Bitcoin transactions
+    # Handles buys, sells, and transfers from CashApp's transaction report
     try:
         # Find CashApp transaction files
+
         excel_files = glob.glob("*.xlsx")
         transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
         cashapp_files = [
@@ -725,11 +759,6 @@ def load_cashapp_transactions():
             # Copy Notes
             df['Notes'] = df['Notes'].fillna('')
             
-            # Clean up numeric columns
-            numeric_columns = ['Amount', 'Total USD', 'Fee', 'Spot Price', 'Subtotal']
-            for col in numeric_columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            
             # Select and reorder columns
             result_df = df[[
                 'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
@@ -749,9 +778,11 @@ def load_cashapp_transactions():
         return pd.DataFrame()
 
 def clean_price_string(value):
-    """Convert price strings to numeric values, handling dollar signs and commas"""
+    # Clean up price strings to numeric values and removes $ signs and commas
+    # Returns 0 if the value can't be converted to a number
     if pd.isna(value):
         return 0
+
     try:
         # If it's already a number, return it
         if isinstance(value, (int, float)):
@@ -763,15 +794,13 @@ def clean_price_string(value):
         return 0
 
 def standardize_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
-    """Standardize signs of Amount and Subtotal based on transaction type"""
+    # Standardize transaction signs for consistency:
+    # + (positive): Buys, rewards, staking income
+    # - (negative): Sells, sends, withdrawals
     try:
         # Make a copy to avoid modifying the original
+
         df = df.copy()
-        
-        # Convert numeric columns
-        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
-        df['Subtotal'] = pd.to_numeric(df['Subtotal'], errors='coerce')
-        df['Fee'] = pd.to_numeric(df['Fee'], errors='coerce')
         
         # Ensure all fees are positive
         df['Fee'] = df['Fee'].abs()
@@ -845,15 +874,8 @@ def standardize_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
         raise
 
 def process_kraken_groups(asset_df: pd.DataFrame) -> pd.DataFrame:
-    """Pre-process Kraken transactions by grouping them by ordertxid.
-    
-    Args:
-        asset_df: DataFrame containing transactions for a single asset
-        
-    Returns:
-        DataFrame with Kraken transactions properly grouped and other transactions unchanged
-    """
-    # First, pre-group Kraken transactions by ordertxid
+    # Group related Kraken transactions that share the same order ID
+    # This combines multiple parts of the same trade into one transaction
     kraken_groups = {}
     non_kraken_rows = []
     
@@ -887,10 +909,11 @@ def process_kraken_groups(asset_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(non_kraken_rows).sort_values(['Timestamp', 'type_order'])
 
 def assign_lot_ids_and_group(df: pd.DataFrame, time_window_seconds: int = 90) -> pd.DataFrame:
-    """Group similar transactions by source & type within time windows, assign lot IDs chronologically."""
+    #Group similar transactions by source & type within time windows, assign lot IDs chronologically.
     df = df.copy()
     df['Lot ID'] = ''
     
+
     # Define receiving types
     receiving_types = [
         'buy',
@@ -982,9 +1005,11 @@ def assign_lot_ids_and_group(df: pd.DataFrame, time_window_seconds: int = 90) ->
     return result
 
 def get_decimal_places(value_str: str) -> int:
-    """Get the number of decimal places in a number string"""
+    # Count how many decimal places are in a number
+    # For example: "1.23" has 2 decimal places, "1.0" has 1
     try:
         value_str = str(value_str)
+
         if '.' in value_str:
             return len(value_str.split('.')[1])
         return 0
@@ -992,9 +1017,11 @@ def get_decimal_places(value_str: str) -> int:
         return 8  # Default to 8 decimal places if we can't determine
 
 def normalize_amount(amount, precision=None):
-    """Convert amount to Decimal with appropriate precision"""
+    # Convert numbers to exact decimal values with proper precision
+    # Ensures we don't lose any decimal places during calculations
     if amount is None or pd.isna(amount):
         return Decimal('0')
+
     
     # Convert to string first to preserve original precision
     amount_str = str(amount)
@@ -1008,10 +1035,14 @@ def normalize_amount(amount, precision=None):
     return d.quantize(Decimal('0.' + '0' * precision), rounding=ROUND_HALF_UP)
 
 def combine_transactions(group: pd.DataFrame) -> pd.Series:
-    """Combine multiple transactions into a single transaction"""
+    # Merge multiple related transactions into one
+    # Combines amounts, fees, and calculates weighted average prices
+    # Also organizes notes for grouped transactions
+
     # Sort by timestamp to use earliest time
     group = group.sort_values('Timestamp')
     
+
     # Determine precision from the Amount column
     max_precision = max(
         get_decimal_places(str(amount))
@@ -1075,7 +1106,8 @@ def combine_transactions(group: pd.DataFrame) -> pd.Series:
     return pd.Series(combined)
 
 def get_historical_price(asset: str, timestamp: datetime) -> float:
-    """Get historical price from cache or CryptoCompare API with comprehensive error handling"""
+    # Look up the historical price of a cryptocurrency at a specific date/time
+    # First checks cache, then uses CryptoCompare API if needed
     global price_cache
     
     # Format date for display
@@ -1174,9 +1206,7 @@ def get_historical_price(asset: str, timestamp: datetime) -> float:
         data = response.json()
         
         if response.status_code != 200:
-            error_msg = f"API Error ({response.status_code}): {data.get('Message', 'Unknown error')}"
-            logging.error(error_msg)
-            print(error_msg)  # Also print for immediate visibility
+            log_error(f"API Error ({response.status_code}): {data.get('Message', 'Unknown error')}")
             return 0
         
         # Try to get price from response
@@ -1208,7 +1238,7 @@ def get_historical_price(asset: str, timestamp: datetime) -> float:
         
         # If we get here, no price was found
         msg = f"No price data found for {display_name} at {rounded_timestamp}"
-        logging.warning(msg)
+        log_error(msg)
         print(msg)
         
         # Cache the no-price result
@@ -1220,18 +1250,18 @@ def get_historical_price(asset: str, timestamp: datetime) -> float:
         
     except requests.exceptions.RequestException as e:
         msg = f"Network error fetching price for {display_name}: {str(e)}"
-        logging.error(msg)
+        log_error(msg)
         print(msg)
         return 0
         
     except Exception as e:
         msg = f"Unexpected error getting price for {display_name}: {str(e)}"
-        logging.error(msg)
+        log_error(msg)
         print(msg)
         return 0
 
 def strip_trailing_zeros(num) -> str:
-    """Convert number to string, removing trailing zeros after decimal while preserving significant digits"""
+    # Convert number to string, removing trailing zeros after decimal while preserving significant digits
     try:
         # Convert input to float first if it's a string
         if isinstance(num, str):
@@ -1248,7 +1278,8 @@ def strip_trailing_zeros(num) -> str:
         return str(num)  # Return original value as string if conversion fails
 
 def update_missing_spot_prices(df: pd.DataFrame) -> pd.DataFrame:
-    """Update missing spot prices using API and recalculate missing subtotals"""
+    # Find any transactions missing price data and look up their prices
+    # Also calculates missing subtotals using the newly found prices
     df = df.copy()
     
     # Find rows with missing spot prices
@@ -1320,19 +1351,18 @@ def update_missing_spot_prices(df: pd.DataFrame) -> pd.DataFrame:
             df.loc[missing_subtotals, 'Amount'] * 
             df.loc[missing_subtotals, 'Spot Price']
         )
-        
-        # Recalculate Total USD for rows with updated subtotals
-        df.loc[missing_subtotals, 'Total USD'] = df.loc[missing_subtotals].apply(
-            lambda row: row['Subtotal'] + (abs(row['Fee']) * (1 if row['Subtotal'] >= 0 else -1)),
-            axis=1
-        )
     
     return df
 
 def merge_all_transactions():
-    """Merge all transaction data into one master sheet"""
+    # Main function that combines all cryptocurrency transactions:
+    # 1. Loads transactions from all exchange files
+    # 2. Standardizes the data format and fixes any missing information
+    # 3. Groups related transactions that happen close together in time
+    # 4. Saves everything to ALL-MASTER-crypto-transactions.xlsx
     try:
         print("\n\nStarting merge process...\n")
+
         
         # Load all transaction data
         coinbase_df = load_coinbase_transactions()
@@ -1344,54 +1374,51 @@ def merge_all_transactions():
         strike_df = load_strike_transactions()
         print(f"")
         cashapp_df = load_cashapp_transactions()
+        print(f"")
         
-        # Ensure all DataFrames have the required columns and reset indices
-        required_columns = [
-            'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 
-            'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes'
-        ]
-        empty_df = pd.DataFrame(columns=required_columns)
+        # Check for existing manual transactions
+        manual_file = Path('add_manual_transactions.xlsx')
+        manual_df = pd.DataFrame()
+        if manual_file.exists():
+            try:
+                manual_df = pd.read_excel(manual_file)
+                if not manual_df.empty:
+                    print("\nLoading manual transactions...")
+                    manual_df['Timestamp'] = pd.to_datetime(manual_df['Timestamp'])
+                    manual_df['Source'] = manual_df['Source'].fillna('Manual')
+                    print(f"Found {len(manual_df)} manual transactions to process")
+            except Exception as e:
+                print(f"Error reading manual transactions: {str(e)}")
+                manual_df = pd.DataFrame()
         
-        # Reset index for non-empty DataFrames
-        if not coinbase_df.empty:
-            coinbase_df = coinbase_df[required_columns].reset_index(drop=True)
-        else:
-            coinbase_df = empty_df.copy()
-            
-        if not coinbase_pro_df.empty:
-            coinbase_pro_df = coinbase_pro_df[required_columns].reset_index(drop=True)
-        else:
-            coinbase_pro_df = empty_df.copy()
-            
-        if not kraken_df.empty:
-            kraken_df = kraken_df[required_columns].reset_index(drop=True)
-        else:
-            kraken_df = empty_df.copy()
-            
-        if not strike_df.empty:
-            strike_df = strike_df[required_columns].reset_index(drop=True)
-        else:
-            strike_df = empty_df.copy()
-            
-        if not cashapp_df.empty:
-            cashapp_df = cashapp_df[required_columns].reset_index(drop=True)
-        else:
-            cashapp_df = empty_df.copy()
+        # Fill in missing values for all transactions
+        all_dfs = []
+        for df in [coinbase_df, coinbase_pro_df, kraken_df, strike_df, cashapp_df, manual_df]:
+            if not df.empty:
+                df = fill_missing_transaction_values(df)
+                all_dfs.append(df)
         
-        if all(df.empty for df in [coinbase_df, coinbase_pro_df, kraken_df, strike_df, cashapp_df]):
+        if all(df.empty for df in all_dfs):
             print("Error: No transaction data found in any files.")
             return
         
         # Force timezone-naive for all DataFrames before concat
-        for df in [coinbase_df, coinbase_pro_df, kraken_df, strike_df, cashapp_df]:
+        for df in all_dfs:
             if not df.empty and 'Timestamp' in df.columns:
                 df['Timestamp'] = pd.to_datetime(df['Timestamp']).dt.tz_localize(None)
         
+        # Define the standard columns used throughout the script
+        # This is used by the manual transaction template and final output
+        required_columns = [
+            'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
+            'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes'
+        ]
+        
         # Combine all transactions with explicit column order
-        all_transactions = pd.concat(
-            [coinbase_df, coinbase_pro_df, kraken_df, strike_df, cashapp_df],
-            ignore_index=True,
-            axis=0
+        all_transactions = safe_concat(
+            all_dfs,
+            columns=required_columns,
+            ignore_index=True
         )
         
         # Standardize signs
@@ -1402,41 +1429,14 @@ def merge_all_transactions():
         
         # Clean up and standardize
         all_transactions['Timestamp'] = pd.to_datetime(all_transactions['Timestamp'])
-        all_transactions['Amount'] = pd.to_numeric(all_transactions['Amount'], errors='coerce')
-        all_transactions['Subtotal'] = pd.to_numeric(all_transactions['Subtotal'], errors='coerce')
-        all_transactions['Total USD'] = pd.to_numeric(all_transactions['Total USD'], errors='coerce')
-        all_transactions['Fee'] = pd.to_numeric(all_transactions['Fee'], errors='coerce')
+
+        # Convert numeric columns
+        numeric_columns = ['Amount', 'Subtotal', 'Total USD', 'Fee']
+        for col in numeric_columns:
+            all_transactions[col] = pd.to_numeric(all_transactions[col], errors='coerce')
         
         # Clean and convert spot prices to numeric values
         all_transactions['Spot Price'] = all_transactions['Spot Price'].apply(clean_price_string)
-        
-        # Calculate missing spot prices
-        spot_price_mask = (
-            (all_transactions['Spot Price'] == 0) & 
-            (all_transactions['Amount'].fillna(0) != 0) & 
-            (all_transactions['Subtotal'].fillna(0) != 0)  # Changed from Total USD to Subtotal
-        )
-        
-        # Update only rows with zero spot prices
-        all_transactions.loc[spot_price_mask, 'Spot Price'] = (
-            all_transactions.loc[spot_price_mask, 'Subtotal'] / 
-            all_transactions.loc[spot_price_mask, 'Amount']
-        )
-        
-        # Fill NaN values
-        all_transactions['Notes'] = all_transactions['Notes'].fillna('')
-        all_transactions['Fee'] = all_transactions['Fee'].fillna(0)
-        
-        # Calculate Total USD based on Subtotal and Fee
-        def calculate_total_usd(row):
-            try:
-                subtotal = float(row['Subtotal'])
-                fee = abs(float(row['Fee']))
-                return subtotal + (fee * (1 if subtotal >= 0 else -1))
-            except:
-                return 0
-        
-        all_transactions['Total USD'] = all_transactions.apply(calculate_total_usd, axis=1)
         
         # Update missing spot prices using API
         all_transactions = update_missing_spot_prices(all_transactions)
@@ -1445,15 +1445,22 @@ def merge_all_transactions():
         all_transactions = assign_lot_ids_and_group(all_transactions)
         
         # Reorder columns
-        column_order = [
-            'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 
-            'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Lot ID', 'Notes'
-        ]
+        # Add Lot ID to required columns for final output
+        final_columns = required_columns[:-1] + ['Lot ID'] + [required_columns[-1]]
         
         # Now reorder after all columns exist
-        all_transactions = all_transactions[column_order]
+        all_transactions = all_transactions[final_columns]
         
         print(f"\nWriting to Excel file...")
+        
+        # Ensure USD values are negative for buys and positive for sells
+        for idx, row in all_transactions.iterrows():
+            if 'buy' in row['Type'].lower():
+                all_transactions.at[idx, 'Total USD'] = -abs(all_transactions.at[idx, 'Total USD'])
+                all_transactions.at[idx, 'Subtotal'] = -abs(all_transactions.at[idx, 'Subtotal'])
+            elif 'sell' in row['Type'].lower():
+                all_transactions.at[idx, 'Total USD'] = abs(all_transactions.at[idx, 'Total USD'])
+                all_transactions.at[idx, 'Subtotal'] = abs(all_transactions.at[idx, 'Subtotal'])
 
         # Save to Excel
         with pd.ExcelWriter('ALL-MASTER-crypto-transactions.xlsx', engine='openpyxl') as writer:
@@ -1475,11 +1482,46 @@ def merge_all_transactions():
             format_excel_worksheet(worksheet, df=all_transactions, sheet_name='Transactions')
             
         print(f"   DONE!!\n\nFile saved as...\n   ALL-MASTER-crypto-transactions.xlsx")
+        
+        # Create manual transactions template if it doesn't exist
+        if not manual_file.exists():
+            print("\nCreating manual transactions template file...")
+            template_df = pd.DataFrame(columns=[
+                'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
+                'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes'
+            ])
+            
+            with pd.ExcelWriter(manual_file, engine='openpyxl') as writer:
+                template_df.to_excel(writer, index=False)
+                format_excel_worksheet(writer.sheets['Sheet1'], template_df)
+            
+            print("\n=================================================")
+            print("\nCreated 'add_manual_transactions.xlsx'")
+            print("\nPlease add any manual transactions to this file with as much information as possible.")
+            print("\nRequired fields:")
+            print("  - Timestamp: When the transaction occurred")
+            print("  - Type: Buy, Sell, Send, Receive, etc.")
+            print("  - Asset: The cryptocurrency symbol (BTC, ETH, etc.)")
+            print("  - Amount: How much crypto was traded")
+            print("\nHelpful fields (the more you provide, the better):")
+            print("  - Total USD: Total cost/proceeds including fees")
+            print("  - Spot Price: Price per coin at time of transaction")
+            print("  - Subtotal: Total USD before fees")
+            print("  - Fee: Transaction fee amount")
+            print("\nThe script will calculate missing values using whatever information you provide.")
+            print("\nRun this '1-merge_crypto_txs.py' script *again* AFTER adding your manual transactions, if you have any.")
+            print("=================================================")
     except Exception as e:
         print(f"Error merging transactions: {str(e)}")
 
+
 def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame = None, sheet_name: str = '') -> None:
-    """Comprehensive worksheet formatting function that handles all formatting needs"""
+    # Make the Excel file easy to read and use:
+    # - Blue headers with filters for sorting
+    # - Proper column widths based on content
+    # - Applies appropriate number formats (currency, dates, decimals)
+    # - Adds filters to the worksheet for easy sorting and filtering
+
     # Add filters
     if df is not None:
         worksheet.auto_filter.ref = f"A1:{openpyxl.utils.get_column_letter(len(df.columns))}{len(df) + 1}"
@@ -1580,115 +1622,9 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                 cell.number_format = 'YYYY-MM-DD HH:MM:SS'
                 cell.alignment = openpyxl.styles.Alignment(horizontal='left')
 
-def group_similar_transactions(df: pd.DataFrame, time_window_minutes: int = 2) -> pd.DataFrame:
-    """Group similar transactions that occur within the specified time window"""
-    def can_group_transactions(group: pd.DataFrame) -> bool:
-        """Check if transactions in group can be combined"""
-        if len(group) <= 1:
-            return True
-            
-        # Sort by timestamp to check time differences
-        sorted_group = group.sort_values('Timestamp')
-        timestamps = sorted_group['Timestamp'].tolist()
-        
-        # Check if any consecutive transactions are more than time_window_minutes apart
-        for i in range(len(timestamps) - 1):
-            time_diff = (timestamps[i + 1] - timestamps[i]).total_seconds() / 60
-            if time_diff > time_window_minutes:
-                return False
-                
-        return True
-    
-    def combine_group(group: pd.DataFrame) -> pd.Series:
-        """Combine transactions in a group into a single transaction"""
-        if len(group) == 1:
-            return group.iloc[0]
-            
-        # Sort by timestamp to use earliest time
-        group = group.sort_values('Timestamp')
-        
-        # Calculate weighted average for spot price
-        total_amount = group['Amount'].abs().sum()
-        weighted_spot_price = (
-            (group['Spot Price'] * group['Amount'].abs()).sum() / total_amount
-            if total_amount > 0 else 0
-        )
-        
-        # Sum the numeric values
-        combined = {
-            'ID': f"{group['ID'].iloc[0]}_grouped",  # Use first ID with suffix
-            'Timestamp': group['Timestamp'].iloc[0],  # Use earliest timestamp
-            'Source': group['Source'].iloc[0],
-            'Type': group['Type'].iloc[0],
-            'Asset': group['Asset'].iloc[0],
-            'Amount': group['Amount'].sum(),
-            'Subtotal': group['Subtotal'].sum(),
-            'Fee': group['Fee'].sum(),
-            'Total USD': group['Total USD'].sum(),
-            'Spot Price': weighted_spot_price,
-            'Lot ID': group['Lot ID'].iloc[0] if 'Lot ID' in group.columns else '',
-            'Notes': f"Grouped {len(group)} transactions"
-        }
-        
-        return pd.Series(combined)
-    
-    # Create copy of dataframe
-    df = df.copy()
-    
-    # Group by asset, source, and type
-    grouped = df.groupby(['Asset', 'Source', 'Type'])
-    
-    # Process each group
-    result_dfs = []
-    for name, group in grouped:
-        if len(group) <= 1:
-            result_dfs.append(group)
-            continue
-            
-        # Sort by timestamp
-        group = group.sort_values('Timestamp')
-        
-        # Initialize subgroups
-        current_subgroup = []
-        all_subgroups = []
-        
-        # Group transactions within time window
-        for idx, row in group.iterrows():
-            if not current_subgroup:
-                current_subgroup = [row]
-            else:
-                time_diff = (row['Timestamp'] - current_subgroup[-1]['Timestamp']).total_seconds() / 60
-                if time_diff <= time_window_minutes:
-                    current_subgroup.append(row)
-                else:
-                    # Check if current_subgroup can be grouped
-                    temp_df = pd.DataFrame(current_subgroup)
-                    if can_group_transactions(temp_df):
-                        all_subgroups.append(combine_group(temp_df))
-                    else:
-                        result_dfs.extend(current_subgroup)
-                    current_subgroup = [row]
-        
-        # Handle last subgroup
-        if current_subgroup:
-            temp_df = pd.DataFrame(current_subgroup)
-            if can_group_transactions(temp_df):
-                all_subgroups.append(combine_group(temp_df))
-            else:
-                result_dfs.extend(current_subgroup)
-        
-        # Add combined subgroups
-        if all_subgroups:
-            result_dfs.append(pd.DataFrame(all_subgroups))
-    
-    # Combine all results
-    result = pd.concat(result_dfs, ignore_index=True)
-    
-    # Sort by timestamp
-    return result.sort_values('Timestamp').reset_index(drop=True)
-
 def clear_old_cache_entries(days_old: int = 30):
-    """Clear cache entries older than specified days"""
+    # Clean up the price cache by removing old entries
+    # By default, removes entries older than 30 days
     cache = load_price_cache()
     current_time = datetime.now()
     
@@ -1709,8 +1645,10 @@ def clear_old_cache_entries(days_old: int = 30):
     save_price_cache(new_cache)
 
 def should_merge_transactions(tx1: Dict, tx2: Dict, time_threshold: int = 90) -> bool:
-    """Determine if two transactions should be merged based on criteria"""
-
+    # Determine if two transactions are part of the same trade:
+    # - Must be same asset and type (buy/sell)
+    # - Must happen within 90 seconds of each other
+    # - For Kraken, if trades file present: must share the same order ID
     # Don't merge Receive or Learning Reward transactions
     if tx1['Type'] in ['Receive', 'Learning Reward'] or tx2['Type'] in ['Receive', 'Learning Reward']:
         return False
@@ -1747,6 +1685,81 @@ def should_merge_transactions(tx1: Dict, tx2: Dict, time_threshold: int = 90) ->
         tx1['Source'] == tx2['Source'] and
         ((tx1['Amount'] > 0) == (tx2['Amount'] > 0))  # Same sign
     )
+
+def fill_missing_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
+    # Fill in missing transaction values and standardize data:
+    # 1. Replace NaN/zero values with calculated values where possible
+    # 2. Ensure consistent signs for monetary values
+    # 3. Handle all combinations of available data
+    if df.empty:
+        return df
+    
+    df = df.copy()
+    
+    # First pass:  Fill NaN values with appropriate defaults
+    df['Notes'] = df['Notes'].fillna('')
+    df['Fee'] = df['Fee'].fillna(0)
+    df['Spot Price'] = df['Spot Price'].fillna(0)
+    df['Subtotal'] = df['Subtotal'].fillna(0)
+    df['Total USD'] = df['Total USD'].fillna(0)
+    
+    # Second pass:  Calculate Spot Price for rows where it's missing/zero but we have enough info
+    spot_price_mask = (
+        (df['Spot Price'] == 0) & 
+        (df['Amount'].fillna(0) != 0)
+    )
+    
+    # Try Subtotal first, then (Total USD - Fee), and Total USD as last resort
+    subtotal_mask = spot_price_mask & (df['Subtotal'].fillna(0) != 0)
+    total_fee_mask = spot_price_mask & ~subtotal_mask & (df['Total USD'].fillna(0) != 0) & (df['Fee'].fillna(0) != 0)
+    total_usd_mask = spot_price_mask & ~subtotal_mask & ~total_fee_mask & (df['Total USD'].fillna(0) != 0)
+    
+    df.loc[subtotal_mask, 'Spot Price'] = (
+        df.loc[subtotal_mask, 'Subtotal'].abs() / 
+        df.loc[subtotal_mask, 'Amount'].abs()
+    )
+    
+    df.loc[total_fee_mask, 'Spot Price'] = (
+        (df.loc[total_fee_mask, 'Total USD'] - df.loc[total_fee_mask, 'Fee']).abs() / 
+        df.loc[total_fee_mask, 'Amount'].abs()
+    )
+    
+    df.loc[total_usd_mask, 'Spot Price'] = (
+        df.loc[total_usd_mask, 'Total USD'].abs() / 
+        df.loc[total_usd_mask, 'Amount'].abs()
+    )
+    
+    # Third pass:  Calculate Fee where missing but we have Total USD and Subtotal
+    fee_mask = (df['Fee'] == 0) & (df['Total USD'] != 0) & (df['Subtotal'] != 0)
+    df.loc[fee_mask, 'Fee'] = (
+        df.loc[fee_mask, 'Total USD'].abs() - 
+        df.loc[fee_mask, 'Subtotal'].abs()
+    )
+    
+    # Calculate Subtotal where missing but we have enough info
+    subtotal_mask = (df['Subtotal'] == 0)
+    # From Total USD and Fee
+    total_fee_mask = subtotal_mask & (df['Total USD'] != 0) & (df['Fee'] != 0)
+    df.loc[total_fee_mask, 'Subtotal'] = (
+        df.loc[total_fee_mask, 'Total USD'] - 
+        df.loc[total_fee_mask, 'Fee'].abs()
+    )
+    # From Amount and Spot Price
+    amount_price_mask = subtotal_mask & ~total_fee_mask & (df['Amount'] != 0) & (df['Spot Price'] != 0)
+    df.loc[amount_price_mask, 'Subtotal'] = (
+        df.loc[amount_price_mask, 'Amount'] * 
+        df.loc[amount_price_mask, 'Spot Price']
+    )
+    
+    # Finally, calculate Total USD where missing
+    total_mask = (df['Total USD'] == 0)
+    # From Subtotal and Fee
+    df.loc[total_mask, 'Total USD'] = (
+        df.loc[total_mask, 'Subtotal'].abs() + 
+        df.loc[total_mask, 'Fee'].abs()
+    )
+    
+    return df
 
 def main():
     merge_all_transactions()
