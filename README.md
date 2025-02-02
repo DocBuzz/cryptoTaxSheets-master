@@ -12,13 +12,13 @@ __** INSTRUCTIONS **__
 (3) You will need Python and PIP (which is installed with Python, just need to check a box to make sure it installs).
 
 (4) The required Python dependences can be installed from the command line with this one command:
-  ~  pip install pandas openpyxl requests
+  - pip install pandas openpyxl requests
 
 (4) You can then run them 1 (merge txs) and 2 (calculate gains), like so:
-  ~  python 1-merge_crypto_txs.py
-  ~  python 2-calculate_all_gains.py
+  -  python 1-merge_crypto_txs.py
+  -  python 2-calculate_all_gains.py
 
-   +++ PRO TIP, from command line, if you're in the same directory as the files, you can just type "python 1" and press the TAB button, and same with "python 2" <TAB>)
+  - +++ PRO TIP, from command line, if you're in the same directory as the files, you can just type "python 1" and press the TAB button, and same with "python 2" <TAB>)
  
 (5) If you need to add some transactions in there after Step 1, the script will automatically create a file called "add-manual-transactions.xlsx" for you to add any transactions made outside the 4 supported exchanges.  Include as much info as possible, and then run Step 1-Merge again. This will ensure that ALL your transactions make it to the master transaction file, as well as give you true and accurate profit/loss calculations for all the different accounting methods.
 
