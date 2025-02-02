@@ -20,7 +20,7 @@ __** INSTRUCTIONS **__
 
   - (+ PRO TIP +  From command line, if you're in the same directory as the files, you can just type "python 1" and press the TAB button, and same with "python 2" <TAB>)
  
-(5) If you need to add some transactions in there after Step 1, the script will automatically create a file called "add-manual-transactions.xlsx" for you to add any transactions made outside the 4 supported exchanges.  Include as much info as possible, and then run Step 1-Merge again. This will ensure that ALL your transactions make it to the master transaction file, as well as give you true and accurate profit/loss calculations for all the different accounting methods.
+(5) If you need to add some transactions that were made outside of the 4 supported exchanges, the first script will automatically create a file called "add-manual-transactions.xlsx" for you to add any transactions made outside the 4 supported exchanges.  Include as much info as possible, and then run Step 1-Merge again. This will ensure that ALL your transactions make it to the master transaction file, and then give you the most true and accurate profit/loss calculations for all the different accounting methods.
 
 
 Prepare to be amazed at the 2 spreadsheets these scripts create.  The 2nd spreadsheet has several sheets with a ton of useful data, identifying which tax lot is sold for each accounting method, yearly gains in different categories, current holdings stats, detailed list of all sales, etc.
