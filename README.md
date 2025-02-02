@@ -31,13 +31,14 @@ Creates 2 main spreadsheets:
 - #1 is a master list of ALL transactions.
 - #2 has several sub-sheets that has a ton of useful data, identifying which tax lot is sold for each accounting method, yearly gains in different categories (short-term sales, long-term sales, gifts, staking income), current holdings stats, detailed list of all sales, etc.
 
+
 - Fills in / Calculates missing blanks if Fee, Spot Price, etc. if there's enough data to calculate it.
 - Otherwise, Fetches missing spot prices from CryptoCompare.com for your first run, and then caches all that spot price data.
-- After the missing spot prices have been cached, then in a matter of seconds, the 2nd script will generate 4 different spreadsheets, each calculated using a different accounting method (FIFO, HIFO, LIFO, LIHO).
-- It will even highlight the different cells (in yellow) between the different accounting method files for you to identify EXACTLY where the biggest differences in profit/loss are between the different methods at the end of a given year.  [NOTE:  You can't just switch accounting methods if you've already been acquiring, holding for years... at least not easily.  You'd have to talk to a tax professional about that.  But...] For someone just now starting to file their taxes, this can definitely save you A TON of headache.
-- If you buy and sell crypto non-stop for a year, you would easily have more work cut out for you just wrapping your head around what is going on with those transactions from the past.
 - This script groups buys/sales together as best as it can, to lessen the complexities.
-- It grabs daily data from CryptoCompare if necessary... fills in a lot of missing blanks... and has quite a bit of verification/validation checks. 
+- It has quite a few verification/validation checks. 
+- After the missing spot prices have been cached, then in a matter of seconds, the 2nd script will generate 4 different spreadsheets, each calculated using a different accounting method (FIFO, HIFO, LIFO, LIHO).
+- It will even highlight the different cells (in yellow) between the different accounting method files for you to identify EXACTLY where the biggest differences in profit/loss are between the different methods at the end of a given year.  [NOTE:  You can't just switch accounting methods if you've already been acquiring, holding for years... at least not easily.  You'd have to talk to a tax professional about that.  But...] For someone just now starting to file their taxes, this can definitely save you A TON of headache.  If you buy and sell crypto non-stop for a year, you would easily have more work cut out for you just wrapping your head around what is going on with those transactions from the past.
+
 
 DISCLAIMER:  This script has a fairly decent amount of "edge case" scenarios put into it, considering I'm just one person.... but I know there's a lot more work that needs to be done.  I would love to hear some feedback or see if anybody either has any other weird scenarios or CSVs from other exchanges to add to the list....    
 
