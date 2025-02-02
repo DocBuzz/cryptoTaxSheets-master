@@ -31,7 +31,7 @@ Creates 2 main spreadsheets:
 - #1 is a master list of ALL transactions.
 - #2 has several sub-sheets that has a ton of useful data, identifying which tax lot is sold for each accounting method, yearly gains in different categories (short-term sales, long-term sales, gifts, staking income), current holdings stats, detailed list of all sales, etc.
 
-
+Details:
 - Fills in / Calculates missing blanks if Fee, Spot Price, etc. if there's enough data to calculate it.
 - Otherwise, Fetches missing spot prices from CryptoCompare.com for your first run, and then caches all that spot price data.
 - This script groups buys/sales together as best as it can, to lessen the complexities.
