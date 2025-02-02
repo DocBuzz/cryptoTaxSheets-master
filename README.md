@@ -4,14 +4,26 @@ ______________________
 __** INSTRUCTIONS **__
 ======================
 
-(1) Convert CSV files from Coinbase [Pro], Kraken, Strike, & CashApp into .XLSX files (later to be auto-merged into *1* MASTER .xlsx file)...
+(1) Convert CSV files from Coinbase [Pro], Kraken, Strike, & CashApp into .XLSX files.
+- Use Excel, LibreOffice, etc.  Just open each one and "Save As.." .XLSX file.
 
-(2) After converting the CSVs into XLSX spreadsheets, place them into the same directory as these Python scripts, and then run them 1 (merge txs) and 2 (calculate gains)....  Prepare to be amazed at the 2 spreadsheets it creates.  The 2nd spreadsheet has several sheets with a ton of useful data, identifying which tax lot is sold for each accounting method, yearly gains in different categories, current holdings stats, detailed list of all sales, etc.
+(2) Either save the .XLSX files directly into the same folder as these 2 python scripts.... or move them into the same folder as these Python scripts.
 
-(3) You will obviously need Python installed with "pip" to install some dependencies.  Best I can tell the required ones can be installed with this one command:  [" pip install pandas openpyxl requests "]
+(3) You will need Python and PIP (which is installed with Python, just need to check a box to make sure it installs).
 
-(4) If you need to add some transactions in there between Step 1 (merging the various .XLSX files (after you convert them from .CSV of course!) and Step 2, that's obviously no problem... just add some data to the end of the Master Sheet... fill out as much as you possibly can... and the 2nd script should be able to fill in the blanks.
+(4) The required Python dependences can be installed from the command line with this one command:
+  ~  pip install pandas openpyxl requests
 
+(4) You can then run them 1 (merge txs) and 2 (calculate gains), like so:
+  ~  python 1-merge_crypto_txs.py
+  ~  python 2-calculate_all_gains.py
+
+   +++ PRO TIP, from command line, if you're in the same directory as the files, you can just type "python 1" and press the TAB button, and same with "python 2" <TAB>)
+ 
+(5) If you need to add some transactions in there after Step 1, the script will automatically create a file called "add-manual-transactions.xlsx" for you to add any transactions made outside the 4 supported exchanges.  Include as much info as possible, and then run Step 1-Merge again. This will ensure that ALL your transactions make it to the master transaction file, as well as give you true and accurate profit/loss calculations for all the different accounting methods.
+
+
+Prepare to be amazed at the 2 spreadsheets these scripts create.  The 2nd spreadsheet has several sheets with a ton of useful data, identifying which tax lot is sold for each accounting method, yearly gains in different categories, current holdings stats, detailed list of all sales, etc.
 
 __________________
 __** FEATURES **__
