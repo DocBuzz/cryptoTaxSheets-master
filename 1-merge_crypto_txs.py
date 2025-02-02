@@ -20,6 +20,8 @@ import logging
 import openpyxl
 import openpyxl.utils
 import openpyxl.styles
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils.cell import get_column_letter
 
 # Important date when LUNA became LUNC (Luna Classic)
 LUNA_TRANSITION_DATE = datetime(2022, 5, 28)
@@ -1148,7 +1150,7 @@ def get_historical_price(asset: str, timestamp: datetime) -> float:
             # If cache entry has timestamp, check if it's recent
             if 'timestamp' in cached_data:
                 cache_age = datetime.now() - datetime.fromtimestamp(cached_data['timestamp'])
-                if cache_age.days < 1:  # Cache valid for 24 hours
+                if cache_age.days < 30:  # Cache valid for 30 days
                     print(f"Found cached price for {display_name}: ${cached_data['price']:.8f}")
                     return float(cached_data['price'])
             else:
@@ -1377,7 +1379,7 @@ def merge_all_transactions():
         print(f"")
         
         # Check for existing manual transactions
-        manual_file = Path('add_manual_transactions.xlsx')
+        manual_file = Path('add-manual-transactions.xlsx')
         manual_df = pd.DataFrame()
         if manual_file.exists():
             try:
@@ -1493,10 +1495,39 @@ def merge_all_transactions():
             
             with pd.ExcelWriter(manual_file, engine='openpyxl') as writer:
                 template_df.to_excel(writer, index=False)
-                format_excel_worksheet(writer.sheets['Sheet1'], template_df)
+                worksheet = writer.sheets['Sheet1']
+                
+                # Add filters
+                worksheet.auto_filter.ref = worksheet.dimensions
+                
+                # Set column widths
+                column_widths = {
+                    'ID': 25,
+                    'Timestamp': 20,
+                    'Source': 15,
+                    'Type': 15,
+                    'Asset': 10,
+                    'Amount': 15,
+                    'Subtotal': 15,
+                    'Fee': 10,
+                    'Total USD': 15,
+                    'Spot Price': 15,
+                    'Notes': 50
+                }
+                
+                for i, col in enumerate(template_df.columns):
+                    worksheet.column_dimensions[get_column_letter(i + 1)].width = column_widths.get(col, 15)
+                
+                # Format header row
+                header_font = Font(bold=True)
+                header_fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
+                
+                for cell in worksheet[1]:
+                    cell.font = header_font
+                    cell.fill = header_fill
             
             print("\n=================================================")
-            print("\nCreated 'add_manual_transactions.xlsx'")
+            print("\nCreated 'add-manual-transactions.xlsx'")
             print("\nPlease add any manual transactions to this file with as much information as possible.")
             print("\nRequired fields:")
             print("  - Timestamp: When the transaction occurred")
@@ -1504,13 +1535,19 @@ def merge_all_transactions():
             print("  - Asset: The cryptocurrency symbol (BTC, ETH, etc.)")
             print("  - Amount: How much crypto was traded")
             print("\nHelpful fields (the more you provide, the better):")
-            print("  - Total USD: Total cost/proceeds including fees")
-            print("  - Spot Price: Price per coin at time of transaction")
             print("  - Subtotal: Total USD before fees")
             print("  - Fee: Transaction fee amount")
+            print("  - Total USD: Total cost/proceeds including fees")
+            print("  - Spot Price: Price per coin at time of transaction")
+            print("\nExtra fields (for your own reference):")
+            print("  - ID: The unique identifier for the transaction")
+            print("  - Source: The source of the transaction (Binance, Bitfinex, Gemini, etc.)")
+            print("  - Notes: Any additional information about the transaction")
             print("\nThe script will calculate missing values using whatever information you provide.")
+
             print("\nRun this '1-merge_crypto_txs.py' script *again* AFTER adding your manual transactions, if you have any.")
             print("=================================================")
+
     except Exception as e:
         print(f"Error merging transactions: {str(e)}")
 
