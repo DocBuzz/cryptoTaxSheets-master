@@ -32,8 +32,8 @@ Creates 2 main spreadsheets:
 - #2 has several sub-sheets that has a ton of useful data, identifying which tax lot is sold for each accounting method, yearly gains in different categories (short-term sales, long-term sales, gifts, staking income), current holdings stats, detailed list of all sales, etc.
 
 Details:
-- Fills in / Calculates missing blanks for Fee, Spot Price, etc. if there's enough data to calculate it.
-- Otherwise, Fetches missing spot prices from CryptoCompare.com for your first run, and then caches all that spot price data.
+- Fills in / Calculates missing blanks for Fee, Spot Price, etc. if there's enough data to calculate it (highlighted in yellow on the MASTER Tx List).
+- Otherwise, Fetches missing spot prices from CryptoCompare.com for your first run, and then caches all that spot price data (highlighted in red on the MASTER Tx List).
 - This script groups buys/sales together as best as it can, to lessen the complexities.
 - It has quite a few verification/validation checks. 
 - After the missing spot prices have been cached, then in a matter of seconds, the 2nd script will generate 4 different spreadsheets, each calculated using a different accounting method (FIFO, HIFO, LIFO, LIHO).
