@@ -1,4 +1,4 @@
-# cryptoTaxSheets - v0.2 (2-part Python script)
+# cryptoTaxSheets - v0.3 (2-part Python script)
 
 ______________________
 __** INSTRUCTIONS **__
