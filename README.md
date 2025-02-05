@@ -4,7 +4,7 @@ ______________________
 __** INSTRUCTIONS **__
 ======================
 
-(1) Place .CSV or .XLSX converted files into the same folder as these 2 python scripts.
+(1) Place .CSV [or .XLSX converted] exchange files into the same folder as these 2 python scripts.
   - If using Kraken, the kraken-ledgers file is essential, but the kraken-trades also helps with grouping multiple transactions by each actual "order".
 
 (2) Install Python and PIP (which is installed with Python, just need to check a box to make sure it installs).
