@@ -2011,8 +2011,8 @@ def compare_all_method_outputs():
                         # If values differ, highlight cells in all workbooks
                         if len(values) > 1:
                             yellow_fill = openpyxl.styles.PatternFill(
-                                start_color='FFFF00',
-                                end_color='FFFF00',
+                                start_color='FFFF99',
+                                end_color='FFFF99',
                                 fill_type='solid'
                             )
                             
@@ -2081,11 +2081,11 @@ def compare_all_method_outputs():
                     # If values differ, highlight cells in all workbooks
                     if len(values) > 1:
                         yellow_fill = openpyxl.styles.PatternFill(
-                            start_color='FFFF00',
-                            end_color='FFFF00',
+                            start_color='FFFF99',
+                            end_color='FFFF99',
                             fill_type='solid'
                         )
-                        
+
                         for m in methods:
                             if sheet_name in workbooks[m].sheetnames:
                                 if asset in asset_row_maps[m]:
@@ -2286,8 +2286,15 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         # Apply number formatting to data cells
         header_value_lower = header_value.lower()
         for cell in column[1:]:  # Skip header
-            if any(x in header_value_lower for x in ['price', 'cost', 'basis', 'proceeds', 'usd', 'fees', 'gain']):
-                cell.number_format = openpyxl.styles.numbers.BUILTIN_FORMATS[44]  # Currency format ($#,##0.00)
+            # Skip percentage columns
+            if '%' in header_value_lower or 'percent' in header_value_lower:
+                cell.number_format = '0.00%;[Red]-0.00%'  # Percentage with red negatives
+            # Special handling for any column containing 'loss' or 'total fees'
+            elif 'loss' in header_value_lower or 'total fees' in header_value_lower:
+                cell.number_format = '_($* #,##0.00_);[Red]_($* -#,##0.00_)'  # Left-aligned $ with red minus
+            # Regular handling for other monetary columns
+            elif any(x in header_value_lower for x in ['price', 'cost', 'basis', 'proceeds', 'usd', 'fees']):
+                cell.number_format = openpyxl.styles.numbers.BUILTIN_FORMATS[44]  # Standard currency format
             elif 'amount' in header_value_lower:
                 if cell.value is not None:
                     # Count significant decimal places in the actual value
@@ -2307,8 +2314,6 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                             cell.number_format = '#,##0'
                     else:
                         cell.number_format = '#,##0'
-            elif '%' in header_value_lower or 'percent' in header_value_lower:
-                cell.number_format = '0.00%'  # Percentage
             elif 'date range' in header_value_lower:
                 cell.alignment = openpyxl.styles.Alignment(horizontal='right')
             elif 'timestamp' in header_value_lower:

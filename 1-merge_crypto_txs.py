@@ -134,11 +134,11 @@ def load_coinbase_transactions():
     # - Learning rewards and other income types
     try:
         # Find Coinbase transaction files
-        excel_files = glob.glob("*.xlsx")
+        files = glob.glob("*.xlsx") + glob.glob("*.csv")
         transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
         
         coinbase_files = [
-            f for f in excel_files 
+            f for f in files 
             if 'coinbase' in f.lower() 
             and any(pattern in f.lower() for pattern in transaction_patterns)
             and 'pro' not in f.lower()  # Exclude Coinbase Pro files
@@ -150,7 +150,33 @@ def load_coinbase_transactions():
         
         print(f"  **  Loading Coinbase transactions...\n")
         print(f" {coinbase_files[0]}")
-        df = pd.read_excel(coinbase_files[0])
+        df = read_transaction_file(coinbase_files[0])
+        
+        if df.empty:
+            return df
+            
+        # Skip the header row if it's just "Timestamp"
+        if df['Timestamp'].iloc[0] == 'Timestamp':
+            df = df.iloc[1:]
+            
+        # Now continue with the normal processing
+        df['Source'] = 'Coinbase'
+        
+        # Handle timestamp parsing with error checking
+        def parse_timestamp(ts):
+            try:
+                # First try direct parsing
+                return pd.to_datetime(ts)
+            except:
+                try:
+                    # Try manual parsing if needed
+                    return datetime.strptime(str(ts), '%Y-%m-%dT%H:%M:%SZ')
+                except:
+                    print(f"Warning: Could not parse timestamp: {ts}")
+                    return None
+                    
+        df['Timestamp'] = df['Timestamp'].apply(parse_timestamp)
+        df['Timestamp'] = df['Timestamp'].dt.tz_localize(None)
         
         # Clean and convert both columns to numeric, handling currency symbols
         subtotal = pd.to_numeric(
@@ -254,13 +280,13 @@ def load_coinbase_pro_transactions():
     # Handles both buy and sell transactions from the fills report
     try:
         dfs = []
-        excel_files = glob.glob("*.xlsx")
+        files = glob.glob("*.xlsx") + glob.glob("*.csv")
         
         # Match any combination of fills/fill and coinbasepro/coinbase-pro
         fill_patterns = ['fill', 'fills']
         pro_patterns = ['coinbasepro', 'coinbase-pro']
         pro_files = [
-            f for f in excel_files 
+            f for f in files 
             if any(pro in f.lower() for pro in pro_patterns)
             and any(fill in f.lower() for fill in fill_patterns)
         ]
@@ -272,7 +298,7 @@ def load_coinbase_pro_transactions():
         print(f"  **  Loading Coinbase Pro transactions...\n")
         for file in pro_files:
             print(f" {file}")
-            df = pd.read_excel(file)
+            df = read_transaction_file(file)
             
             if df.empty:
                 continue
@@ -317,11 +343,11 @@ def load_kraken_transactions():
     # Load and combine Kraken ledger entries with trade history
     # Matches trades with their orders and handles various transaction types
     try:
-        excel_files = glob.glob("*.xlsx")
+        files = glob.glob("*.xlsx") + glob.glob("*.csv")
         
         # Find ledger file
         ledger_patterns = ['kraken-ledgers', 'kraken_ledgers', 'kraken-ledger', 'kraken_ledger']
-        ledger_files = [f for f in excel_files if any(pattern in f.lower() for pattern in ledger_patterns)]
+        ledger_files = [f for f in files if any(pattern in f.lower() for pattern in ledger_patterns)]
         
         if not ledger_files:
             print("Warning: No Kraken ledger file found. Skipping Kraken transactions.")
@@ -330,11 +356,11 @@ def load_kraken_transactions():
         ledger_file = ledger_files[0]
         print(f"  **  Loading Kraken ledger...\n")
         print(f" {ledger_file}")
-        ledger_df = pd.read_excel(ledger_file).reset_index(drop=True)  # Reset index immediately
+        ledger_df = read_transaction_file(ledger_file).reset_index(drop=True)
         
         # Find trades file
         trades_patterns = ['kraken-trades', 'kraken_trades', 'kraken-trade', 'kraken_trade']
-        trades_files = [f for f in excel_files if any(pattern in f.lower() for pattern in trades_patterns)]
+        trades_files = [f for f in files if any(pattern in f.lower() for pattern in trades_patterns)]
         
         trades_df = pd.DataFrame()
         if not trades_files:
@@ -343,7 +369,7 @@ def load_kraken_transactions():
             trades_file = trades_files[0]
             print(f"\n  **  Loading Kraken trades...\n")
             print(f" {trades_file}")
-            trades_df = pd.read_excel(trades_file).reset_index(drop=True)  # Reset index immediately
+            trades_df = read_transaction_file(trades_file).reset_index(drop=True)
         
         # Create a mapping of txid to ordertxid from trades file
         ordertxid_map = {}
@@ -542,11 +568,11 @@ def load_strike_transactions():
     # Handles buys, sells, and withdrawals from Strike's transaction report
     try:
         # Find Strike transaction files
-        excel_files = glob.glob("*.xlsx")
+        files = glob.glob("*.xlsx") + glob.glob("*.csv")
         transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
 
         strike_files = [
-            f for f in excel_files 
+            f for f in files 
             if 'strike' in f.lower() 
             and any(pattern in f.lower() for pattern in transaction_patterns)
         ]
@@ -560,7 +586,7 @@ def load_strike_transactions():
         print(f"  **  Loading Strike transactions...\n")
         for file in strike_files:
             print(f" {file}")
-            df = pd.read_excel(file)
+            df = read_transaction_file(file)
             
             if df.empty:
                 continue
@@ -645,10 +671,10 @@ def load_cashapp_transactions():
     # Handles buys, sells, and transfers from CashApp's transaction report
     try:
         # Find CashApp transaction files
-        excel_files = glob.glob("*.xlsx")
+        files = glob.glob("*.xlsx") + glob.glob("*.csv")
         transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
         cashapp_files = [
-            f for f in excel_files 
+            f for f in files 
             if any(f.lower().startswith(p) for p in ['cash_app', 'cashapp'])
             and any(pattern in f.lower() for pattern in transaction_patterns)
         ]
@@ -663,7 +689,7 @@ def load_cashapp_transactions():
         for file in cashapp_files:
             print(f"  **  Loading CashApp transactions...\n")
             print(f" {file}")
-            df = pd.read_excel(file)
+            df = read_transaction_file(file)
             
             if df.empty:
                 continue
@@ -1410,12 +1436,12 @@ def merge_all_transactions():
         manual_df = pd.DataFrame()
         if manual_file.exists():
             try:
-                manual_df = pd.read_excel(manual_file)
+                manual_df = read_transaction_file(manual_file)
                 if not manual_df.empty:
-                    print("\nLoading manual transactions...")
+                    print("\n **  Loading Manual transactions...")
                     manual_df['Timestamp'] = pd.to_datetime(manual_df['Timestamp'])
                     manual_df['Source'] = manual_df['Source'].fillna('Manual')
-                    print(f"Found {len(manual_df)} manual transactions to process")
+                    print(f"\nFound {len(manual_df)} manual transactions to process")
             except Exception as e:
                 print(f"Error reading manual transactions: {str(e)}")
                 manual_df = pd.DataFrame()
@@ -1529,13 +1555,14 @@ def merge_all_transactions():
 
             # Format worksheet
             format_excel_worksheet(worksheet, df=all_transactions, sheet_name='Transactions', 
-                                   calculated_cells=calculated_cells,
-                                   historical_cells=historical_cells)
+                               calculated_cells=calculated_cells,
+                               historical_cells=historical_cells)
             
         print(f"   DONE!!\n\nFile saved as...\n   ALL-MASTER-crypto-transactions.xlsx")
         
         # Create manual transactions template if it doesn't exist
         if not manual_file.exists():
+            print("   ***********************************")
             print("\nCreating manual transactions template file...")
             template_df = pd.DataFrame(columns=[
                 'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
@@ -1575,9 +1602,10 @@ def merge_all_transactions():
                     cell.font = header_font
                     cell.fill = header_fill
             
-            print("\n=================================================")
-            print("\nCreated 'add-manual-transactions.xlsx'")
-            print("\nPlease add any manual transactions to this file with as much information as possible.")
+            print("\n ... Created 'add-manual-transactions.xlsx'")
+            print("              ****************************")
+            print("\n  ** NOTICE **: ADD any transactions from 'unsupported' exchanges to this 'manual' file.")
+            print("\n######################################################################################")
             print("\nRequired fields:")
             print("  - Timestamp: When the transaction occurred")
             print("  - Type: Buy, Sell, Send, Receive, etc.")
@@ -1592,10 +1620,24 @@ def merge_all_transactions():
             print("  - ID: The unique identifier for the transaction")
             print("  - Source: The source of the transaction (Binance, Bitfinex, Gemini, etc.)")
             print("  - Notes: Any additional information about the transaction")
-            print("\nThe script will calculate missing values using whatever information you provide.")
-
-            print("\nRun this '1-merge_crypto_txs.py' script *again* AFTER adding your manual transactions, if you have any.")
-            print("=================================================")
+            print("\nThe script will calculate missing values more accurately if you provide as much information as possible.")
+            print("\n##################################################################################")
+            print("\n  ##########")
+            print("  * NOTICE *:  If you have *ADDITIONAL* transactions from...")
+            print("  ##########      - other exchanges...")
+            print("                  - private sales...")
+            print("                  - Bitcoin ATMs... etc.")
+            print("\n               Then ADD these extra transactions to the newly created 'add-manual-transactions.xlsx' file")
+            print("                  ... and RUN this '1-merge_crypto_txs.py' script AGAIN.")
+            print("\n########################################################################################")
+            print("\n   If you do *NOT* have additional transactions to manually add...")
+            print("\n   - You can view the 'ALL-MASTER-crypto-transactions.xlsx' file in Excel, LibreOffice, or Google Sheets.")
+            print("                       ***********************************")
+            print("   - You can also run the '2-calculate-tax-lots.py' script to calculate your tax lots.")
+            print("                           ***********************")
+            print("\n  **IMPORTANT**:  Make sure to BACK UP your 'ALL-MASTER-crypto-transactions.xlsx' file!")
+            print("                               **** **       ***********************************")
+            print("###########################################################################################")
 
     except Exception as e:
         print(f"Error merging transactions: {str(e)}")
@@ -1607,6 +1649,7 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     # - Proper column widths based on content
     # - Applies appropriate number formats (currency, dates, decimals)
     # - Adds filters to the worksheet for easy sorting and filtering
+    # - Colors negative numbers in red
 
     # Add filters
     if df is not None:
@@ -1621,6 +1664,7 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
     header_font = openpyxl.styles.Font(bold=True)
     center_align = openpyxl.styles.Alignment(horizontal='center')
     left_align = openpyxl.styles.Alignment(horizontal='left')
+    red_font = openpyxl.styles.Font(color='FF0000')  # Red color for negative numbers
     
     # First pass: Apply basic header formatting and calculate content lengths
     column_content_lengths = {}
@@ -1681,8 +1725,8 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         # Apply number formatting to data cells
         header_value_lower = header_value.lower()
         for cell in column[1:]:  # Skip header
-            if any(x in header_value_lower for x in ['price', 'usd', 'fee', 'subtotal']):
-                cell.number_format = openpyxl.styles.numbers.BUILTIN_FORMATS[44]  # Currency
+            if any(x in header_value_lower for x in ['price', 'usd', 'subtotal', 'fee']):
+                cell.number_format = '_($* #,##0.00_);[Red]_($* -#,##0.00_)'  # Left-aligned $ with red minus
             elif header_value == 'Amount':  # Exact match for Amount column
                 if cell.value is not None:
                     # Count significant decimal places in the actual value
@@ -1697,11 +1741,11 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
                                 break
                         decimals = last_nonzero
                         if decimals > 0:
-                            cell.number_format = f'#,##0.{"0" * decimals}'
+                            cell.number_format = f'#,##0.{"0" * decimals};[Red]-#,##0.{"0" * decimals}'
                         else:
-                            cell.number_format = '#,##0'
+                            cell.number_format = '#,##0;[Red]-#,##0'
                     else:
-                        cell.number_format = '#,##0'
+                        cell.number_format = '#,##0;[Red]-#,##0'
             elif 'date' in header_value_lower:
                 cell.number_format = 'YYYY-MM-DD HH:MM:SS'
             elif 'timestamp' in header_value_lower:
@@ -1872,6 +1916,55 @@ def fill_missing_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
 
 def main():
     merge_all_transactions()
+
+def read_transaction_file(file_path):
+    #Attempts to read a transaction file in either XLSX or CSV format.
+    #Returns a pandas DataFrame or empty DataFrame if file can't be read.
+    try:
+        # Convert Path object to string for extension checking
+        file_path_str = str(file_path)
+        
+        # Try Excel first
+        if file_path_str.lower().endswith('.xlsx'):
+            return pd.read_excel(file_path)
+        # Try CSV with different encodings and delimiters
+        elif file_path_str.lower().endswith('.csv'):
+            # For Coinbase CSV, we need to find the actual header row
+            if 'coinbase' in file_path_str.lower() and 'pro' not in file_path_str.lower():
+                try:
+                    # Read first few rows to find headers
+                    temp_df = pd.read_csv(file_path, nrows=20)
+                    for i in range(len(temp_df)):
+                        row_values = temp_df.iloc[i].values
+                        # Look for multiple header indicators
+                        if any('Timestamp' in str(x) for x in row_values) or \
+                           any('Transaction Type' in str(x) for x in row_values) or \
+                           any('Quantity Transacted' in str(x) for x in row_values):
+                            # Get the actual column names from this row
+                            column_names = [str(x).strip() for x in row_values]
+                            # Read the file again, skipping to the data and using our column names
+                            return pd.read_csv(file_path, 
+                                          skiprows=i+1,    # Skip past the header row
+                                          names=column_names)  # Use the column names we found
+                except:
+                    pass
+            
+            # For other CSV files, try different encodings
+            try:
+                return pd.read_csv(file_path, encoding='utf-8')
+            except UnicodeDecodeError:
+                try:
+                    return pd.read_csv(file_path, encoding='utf-8-sig')
+                except:
+                    try:
+                        return pd.read_csv(file_path, encoding='latin1')
+                    except:
+                        print(f"\nDEBUG: Failed to read {file_path} with any encoding")
+                        return pd.DataFrame()
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Error reading file {file_path}: {str(e)}")
+        return pd.DataFrame()
 
 if __name__ == "__main__":
     main()
