@@ -1,18 +1,16 @@
-# cryptoTaxSheets - v0.3 (2-part Python script)
+# cryptoTaxSheets - v0.4 (2-part Python script)
 
 ______________________
 __** INSTRUCTIONS **__
 ======================
 
-(1) Convert CSV files from Coinbase, Coinbase Pro, Kraken, Strike, & CashApp into .XLSX files.
-- Use Excel, LibreOffice, etc.  Just open each one and "Save As.." .XLSX file.
-- If using Kraken, the kraken-ledgers file is essential, but the kraken-trades also helps with grouping multiple transactions by each actual "order".
+(1) Place .CSV or .XLSX converted files into the same folder as these 2 python scripts.
+  - If using Kraken, the kraken-ledgers file is essential, but the kraken-trades also helps with grouping multiple transactions by each actual "order".
 
-(2) Either save the .XLSX files directly into the same folder as these 2 python scripts.... or move them into the same folder as these Python scripts.
+(2) Install Python and PIP (which is installed with Python, just need to check a box to make sure it installs).
+  - https://www.python.org/downloads/
 
-(3) You will need Python and PIP (which is installed with Python, just need to check a box to make sure it installs).
-
-(4) The required Python dependences can be installed from the command line with this one command:
+(3) The required Python dependences can be installed from the command line with this one command:
   - pip install pandas openpyxl requests
 
 (4) You can then run them 1 (merge txs) and 2 (calculate gains), like so:
@@ -21,7 +19,7 @@ __** INSTRUCTIONS **__
 
   - (+PRO TIP+  From command line, if you're in the same directory as the files, you can just type "python 1" and press the TAB button, and same with "python 2" (TAB key))
  
-(5) If you need to add some transactions that were made outside of the 4 supported exchanges, the first script will automatically create a file called "add-manual-transactions.xlsx" for you to add any transactions made outside the 4 supported exchanges.  Include as much info as possible, and then run Step 1-Merge again. This will ensure that ALL your transactions make it to the master transaction file, and then give you the most true and accurate profit/loss calculations for all the different accounting methods.
+(5) If you need to add some transactions that were made outside of the 4 supported exchanges, the first script will automatically create a file called "add-manual-transactions.xlsx" for you to add any transactions made outside the ~5 supported exchanges.  Include as much info as possible, and then run 'python 1-merge_crypto_txs.py' again. This will ensure that ALL your transactions make it to the master transaction file, and then give you the most true and accurate profit/loss calculations for all the different accounting methods.
 
 
 __________________
