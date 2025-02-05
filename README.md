@@ -4,8 +4,9 @@ ______________________
 __** INSTRUCTIONS **__
 ======================
 
-(1) Convert CSV files from Coinbase [Pro], Kraken, Strike, & CashApp into .XLSX files.
+(1) Convert CSV files from Coinbase, Coinbase Pro, Kraken, Strike, & CashApp into .XLSX files.
 - Use Excel, LibreOffice, etc.  Just open each one and "Save As.." .XLSX file.
+- If using Kraken, the kraken-ledgers file is essential, but the kraken-trades also helps with grouping multiple transactions by each actual "order".
 
 (2) Either save the .XLSX files directly into the same folder as these 2 python scripts.... or move them into the same folder as these Python scripts.
 
