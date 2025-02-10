@@ -8,15 +8,19 @@ __** INSTRUCTIONS **__
   - Coinbase: https://accounts.coinbase.com/statements
 
      (Under 'Generate custom statement', use Custom Date range from before first transaction until today, and select .CSV format)
+    
   - Coinbase Pro: https://accounts.coinbase.com/statements/pro
 
     (Use 'Fills' Report Type, .CSV format, and you must download each year individually thru 2022, when it became "Coinbase Advanced")
+    
   - Kraken: https://pro.kraken.com/app/settings/documents
 
     (Under 'Exports', click 'Create Report', choose 'Ledgers' *and* 'Trades' types, each with widest date ranges and .CSV format... then UNZIP!)
+    
   - Strike: https://dashboard.strike.me/transactions
 
-    (Click "Generate Report" with widest date ranges)
+    (Click 'Generate Report' with widest date ranges)
+    
   - CashApp: https://cash.app/account/activity
 
     (Must use desktop site.  Click 'Download' to the right of the transaction filter)
