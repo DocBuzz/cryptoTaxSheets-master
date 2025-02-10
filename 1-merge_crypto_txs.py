@@ -22,6 +22,8 @@ import openpyxl.utils
 import openpyxl.styles
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils.cell import get_column_letter
+import csv
+from io import StringIO
 
 # Important date when LUNA became LUNC (Luna Classic)
 LUNA_TRANSITION_DATE = datetime(2022, 5, 28)
@@ -72,6 +74,14 @@ def load_price_cache():
         try:
             with open(cache_file, 'r') as f:
                 return json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"Error: Price cache file is corrupted: {e}")
+            # Only backup and start fresh if JSON is actually corrupted
+            try:
+                cache_file.rename(cache_file.with_suffix('.json.bak'))
+                print("Corrupted cache file backed up and starting fresh")
+            except:
+                pass
         except Exception as e:
             print(f"Error loading price cache: {e}")
     return {}
@@ -135,142 +145,162 @@ def load_coinbase_transactions():
     try:
         # Find Coinbase transaction files
         files = glob.glob("*.xlsx") + glob.glob("*.csv")
-        transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
         
+        # First check for files with 'coinbase' or 'csv_version-' in the name
+        # BUT exclude any pro files first
         coinbase_files = [
             f for f in files 
-            if ('coinbase' in f.lower() or 'csv_version-' in f.lower())
-            and any(pattern in f.lower() for pattern in transaction_patterns)
-            and 'pro' not in f.lower()  # Exclude Coinbase Pro files
+            if ('pro' not in f.lower()) and  # Check for pro first
+            ('coinbase' in f.lower() or 'csv_version-' in f.lower())
         ]
+        
+        # If no files found with primary patterns, look for transaction patterns
+        if not coinbase_files:
+            transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
+            coinbase_files = [
+                f for f in files 
+                if ('pro' not in f.lower()) and  # Check for pro first
+                ('coinbase' in f.lower() or 'csv_version-' in f.lower())
+                and any(pattern in f.lower() for pattern in transaction_patterns)
+            ]
         
         if not coinbase_files:
             print("Warning: No Coinbase transaction files found. Skipping Coinbase transactions.")
             return pd.DataFrame()
         
+        dfs = []  # List to store DataFrames from each file
+        
         print(f"  **  Loading Coinbase transactions...\n")
-        print(f" {coinbase_files[0]}")
-        df = read_transaction_file(coinbase_files[0])
-        
-        if df.empty:
-            return df
+        for file in coinbase_files:  # Process each file
+            print(f" {file}")
+            df = read_transaction_file(file)
             
-        # Skip the header row if it's just "Timestamp"
-        if df['Timestamp'].iloc[0] == 'Timestamp':
-            df = df.iloc[1:]
+            if df.empty:
+                continue
+                
+            # Skip the header row if it's just "Timestamp"
+            if df['Timestamp'].iloc[0] == 'Timestamp':
+                df = df.iloc[1:]
+                
+            # Now continue with the normal processing
+            df['Source'] = 'Coinbase'
             
-        # Now continue with the normal processing
-        df['Source'] = 'Coinbase'
-        
-        # Handle timestamp parsing with error checking
-        def parse_timestamp(ts):
-            try:
-                # First try direct parsing
-                return pd.to_datetime(ts)
-            except:
+            # Handle timestamp parsing with error checking
+            def parse_timestamp(ts):
                 try:
-                    # Try manual parsing if needed
-                    return datetime.strptime(str(ts), '%Y-%m-%dT%H:%M:%SZ')
+                    # First try direct parsing
+                    return pd.to_datetime(ts)
                 except:
-                    print(f"Warning: Could not parse timestamp: {ts}")
-                    return None
+                    try:
+                        # Try manual parsing if needed
+                        return datetime.strptime(str(ts), '%Y-%m-%dT%H:%M:%SZ')
+                    except:
+                        print(f"Warning: Could not parse timestamp: {ts}")
+                        return None
+                        
+            df['Timestamp'] = df['Timestamp'].apply(parse_timestamp)
+            df['Timestamp'] = df['Timestamp'].dt.tz_localize(None)
+            
+            # Clean and convert both columns to numeric, handling currency symbols
+            subtotal = pd.to_numeric(
+                df['Subtotal'].replace(r'[\$,]', '', regex=True),
+                errors='coerce'
+            )
+            total = pd.to_numeric(
+                df['Total (inclusive of fees and/or spread)'].replace(r'[\$,]', '', regex=True),
+                errors='coerce'
+            )
+            
+            # Create a mask for where we should use the Total instead of Subtotal
+            use_total_mask = (
+                subtotal.notna() & 
+                total.notna() & 
+                (abs(total) < abs(subtotal))
+            )
+            
+            # Where the mask is True, use Total instead of Subtotal
+            df.loc[use_total_mask, 'Subtotal'] = df.loc[use_total_mask, 'Total (inclusive of fees and/or spread)']
+            
+            # Now continue with the normal processing
+            df['Source'] = 'Coinbase'
+            df['Timestamp'] = pd.to_datetime(df['Timestamp']).dt.tz_localize(None)
+            df = df.rename(columns={
+                'Transaction Type': 'Type',
+                'Quantity Transacted': 'Amount',
+                'Subtotal': 'Subtotal',
+                'Fees and/or Spread': 'Fee',
+                'Price at Transaction': 'Spot Price'
+            })
+            
+            # Clean monetary values using Decimal for precision
+            df['Amount'] = df['Amount'].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
+            df['Subtotal'] = df['Subtotal'].replace(r'[\$,]', '', regex=True).apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
+            df['Fee'] = df['Fee'].replace(r'[\$,]', '', regex=True).apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
+            df['Spot Price'] = df['Spot Price'].replace(r'[\$,]', '', regex=True).apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
+            
+            # Calculate Total USD before processing Convert transactions
+            df['Total USD'] = df.apply(
+                lambda row: row['Subtotal'] + (abs(row['Fee']) * (1 if row['Subtotal'] >= 0 else -1)),
+                axis=1
+            )
+            
+            # Handle Convert transactions by creating two rows for each
+            new_rows = []
+            
+            for idx, row in df.iterrows():
+                if row['Type'] == 'Convert':
+                    # Parse the Notes field
+                    # Example: "Converted 21.40733 ALGO to 0.00022474 BTC"
+                    parts = row['Notes'].split(' ')
+                    sell_amount = Decimal(str(parts[1]))
+                    sell_asset = parts[2]
+                    buy_amount = Decimal(str(parts[4]))
+                    buy_asset = parts[5]
                     
-        df['Timestamp'] = df['Timestamp'].apply(parse_timestamp)
-        df['Timestamp'] = df['Timestamp'].dt.tz_localize(None)
+                    # Get USD values directly from input file
+                    total_with_fees = abs(Decimal(str(row['Total (inclusive of fees and/or spread)']).replace('$', '').replace(',', '')))
+                    subtotal = abs(Decimal(str(row['Subtotal']).replace('$', '').replace(',', '')))
+                    fee = total_with_fees - subtotal  # Calculate fee as difference
+                    
+                    # Update the original row to be the sell transaction
+                    df.at[idx, 'Type'] = 'Sell'
+                    df.at[idx, 'Asset'] = sell_asset
+                    df.at[idx, 'Amount'] = sell_amount
+                    df.at[idx, 'Fee'] = fee
+                    df.at[idx, 'Total USD'] = total_with_fees  # Use the total with fees value
+                    df.at[idx, 'Spot Price'] = total_with_fees / sell_amount
+                    
+                    # Create the buy transaction as a new row
+                    buy_row = row.copy()
+                    buy_row['Type'] = 'Buy'
+                    buy_row['Asset'] = buy_asset
+                    buy_row['Amount'] = buy_amount
+                    buy_row['Fee'] = Decimal('0')
+                    buy_row['Total USD'] = total_with_fees  # Use same total with fees value
+                    buy_row['Spot Price'] = total_with_fees / buy_amount
+                    new_rows.append(buy_row)
+            
+            # Add the new buy rows to the DataFrame
+            if new_rows:
+                df = safe_concat([df, pd.DataFrame(new_rows)], columns=df.columns, ignore_index=True)
+            
+            # Rename "Inflation Reward" to "Staking Income"
+            df.loc[df['Type'] == 'Inflation Reward', 'Type'] = 'Staking Income'
+            
+            # Ensure numeric columns are properly typed
+            numeric_columns = ['Amount', 'Total USD', 'Fee', 'Spot Price']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = df[col].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
+            
+            # Add this DataFrame to our list
+            dfs.append(df)
         
-        # Clean and convert both columns to numeric, handling currency symbols
-        subtotal = pd.to_numeric(
-            df['Subtotal'].replace(r'[\$,]', '', regex=True),
-            errors='coerce'
-        )
-        total = pd.to_numeric(
-            df['Total (inclusive of fees and/or spread)'].replace(r'[\$,]', '', regex=True),
-            errors='coerce'
-        )
+        # Combine all DataFrames
+        if dfs:
+            return pd.concat(dfs, ignore_index=True)
+        return pd.DataFrame()
         
-        # Create a mask for where we should use the Total instead of Subtotal
-        use_total_mask = (
-            subtotal.notna() & 
-            total.notna() & 
-            (abs(total) < abs(subtotal))
-        )
-        
-        # Where the mask is True, use Total instead of Subtotal
-        df.loc[use_total_mask, 'Subtotal'] = df.loc[use_total_mask, 'Total (inclusive of fees and/or spread)']
-        
-        # Now continue with the normal processing
-        df['Source'] = 'Coinbase'
-        df['Timestamp'] = pd.to_datetime(df['Timestamp']).dt.tz_localize(None)
-        df = df.rename(columns={
-            'Transaction Type': 'Type',
-            'Quantity Transacted': 'Amount',
-            'Subtotal': 'Subtotal',
-            'Fees and/or Spread': 'Fee',
-            'Price at Transaction': 'Spot Price'
-        })
-        
-        # Clean monetary values using Decimal for precision
-        df['Amount'] = df['Amount'].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
-        df['Subtotal'] = df['Subtotal'].replace(r'[\$,]', '', regex=True).apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
-        df['Fee'] = df['Fee'].replace(r'[\$,]', '', regex=True).apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
-        df['Spot Price'] = df['Spot Price'].replace(r'[\$,]', '', regex=True).apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
-        
-        # Calculate Total USD before processing Convert transactions
-        df['Total USD'] = df.apply(
-            lambda row: row['Subtotal'] + (abs(row['Fee']) * (1 if row['Subtotal'] >= 0 else -1)),
-            axis=1
-        )
-        
-        # Handle Convert transactions by creating two rows for each
-        new_rows = []
-        
-        for idx, row in df.iterrows():
-            if row['Type'] == 'Convert':
-                # Parse the Notes field
-                # Example: "Converted 21.40733 ALGO to 0.00022474 BTC"
-                parts = row['Notes'].split(' ')
-                sell_amount = Decimal(str(parts[1]))
-                sell_asset = parts[2]
-                buy_amount = Decimal(str(parts[4]))
-                buy_asset = parts[5]
-                
-                # Get USD values directly from input file
-                total_with_fees = abs(Decimal(str(row['Total (inclusive of fees and/or spread)']).replace('$', '').replace(',', '')))
-                subtotal = abs(Decimal(str(row['Subtotal']).replace('$', '').replace(',', '')))
-                fee = total_with_fees - subtotal  # Calculate fee as difference
-                
-                # Update the original row to be the sell transaction
-                df.at[idx, 'Type'] = 'Sell'
-                df.at[idx, 'Asset'] = sell_asset
-                df.at[idx, 'Amount'] = sell_amount
-                df.at[idx, 'Fee'] = fee
-                df.at[idx, 'Total USD'] = total_with_fees  # Use the total with fees value
-                df.at[idx, 'Spot Price'] = total_with_fees / sell_amount
-                
-                # Create the buy transaction as a new row
-                buy_row = row.copy()
-                buy_row['Type'] = 'Buy'
-                buy_row['Asset'] = buy_asset
-                buy_row['Amount'] = buy_amount
-                buy_row['Fee'] = Decimal('0')
-                buy_row['Total USD'] = total_with_fees  # Use same total with fees value
-                buy_row['Spot Price'] = total_with_fees / buy_amount
-                new_rows.append(buy_row)
-        
-        # Add the new buy rows to the DataFrame
-        if new_rows:
-            df = safe_concat([df, pd.DataFrame(new_rows)], columns=df.columns, ignore_index=True)
-        
-        # Rename "Inflation Reward" to "Staking Income"
-        df.loc[df['Type'] == 'Inflation Reward', 'Type'] = 'Staking Income'
-        
-        # Ensure numeric columns are properly typed
-        numeric_columns = ['Amount', 'Total USD', 'Fee', 'Spot Price']
-        for col in numeric_columns:
-            if col in df.columns:
-                df[col] = df[col].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
-        
-        return df[['ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes']]
     except Exception as e:
         print(f"Error loading Coinbase transactions: {str(e)}")
         return pd.DataFrame()
@@ -570,12 +600,11 @@ def load_strike_transactions():
     try:
         # Find Strike transaction files
         files = glob.glob("*.xlsx") + glob.glob("*.csv")
-        transaction_patterns = ['transactions', 'txs', 'transaction', 'tx', 'trans', 'action', 'activity', 'log', 'report', 'history']
-
+        
+        # First check for files with 'strike' or 'btc-account-' in the name
         strike_files = [
             f for f in files 
             if ('strike' in f.lower() or 'btc-account-' in f.lower())
-            and any(pattern in f.lower() for pattern in transaction_patterns)
         ]
         
         if not strike_files:
@@ -591,63 +620,115 @@ def load_strike_transactions():
             
             if df.empty:
                 continue
+            
+            # Check if this is the new BTC account format
+            if 'Time (UTC)' in df.columns or 'BTC-account-' in file:
+                df['Source'] = 'Strike'
                 
-            # Filter rows based on Transaction Type and State
-            df = df[
-                (df['Transaction Type'].isin(['Trade', 'Withdrawal'])) & 
-                (df['State'] == 'Completed')
-            ]
+                # Map columns to standard format
+                df = df.rename(columns={
+                    'Transaction ID': 'ID',
+                    'Time (UTC)': 'Timestamp',
+                    'Currency': 'Asset',
+                    'Exchange Rate': 'Spot Price'
+                })
+                
+                # Convert Exchange/Bank Payout to Buy/Sell/Send
+                def determine_type(row):
+                    if row['Transaction Type'] == 'Bank Payout':
+                        return 'Send'
+                    elif row['Transaction Type'] == 'Exchange':
+                        return 'Buy' if float(str(row['Amount']).replace(',', '')) > 0 else 'Sell'
+                    return row['Transaction Type']
+                
+                df['Type'] = df.apply(determine_type, axis=1)
+                df['Asset'] = 'BTC'  # Always BTC for Strike
+                
+                # Handle fees - convert BTC fees to USD if needed
+                df['Fee'] = pd.to_numeric(df['Fee Amount'].replace(r'[,]', '', regex=True), errors='coerce').fillna(0)
+                
+                # If fee is in BTC, convert to USD
+                fee_mask = (df['Fee Currency'] == 'BTC') & (df['Fee'] != 0)
+                if fee_mask.any():
+                    df.loc[fee_mask, 'Fee'] = df.loc[fee_mask].apply(
+                        lambda row: float(row['Fee']) * float(str(row['Spot Price']).replace(',', '')), 
+                        axis=1
+                    )
+                
+                # Clean numeric values
+                df['Amount'] = pd.to_numeric(df['Amount'].replace(r'[,]', '', regex=True), errors='coerce')
+                df['Spot Price'] = pd.to_numeric(df['Spot Price'].replace(r'[,]', '', regex=True), errors='coerce')
+                
+                # Calculate Subtotal and Total USD
+                df['Subtotal'] = df['Amount'].abs() * df['Spot Price']
+                df['Total USD'] = df.apply(
+                    lambda row: row['Subtotal'] + (abs(row['Fee']) * (-1 if row['Type'] == 'Sell' else 1)),
+                    axis=1
+                )
+                
+                df['Notes'] = ''
+                
+            else:
+                # Original Strike format handling
+                df['Source'] = 'Strike'
+                df = df[
+                    (df['Transaction Type'].isin(['Trade', 'Withdrawal'])) & 
+                    (df['State'] == 'Completed')
+                ]
+                
+                # Create timestamp from date and time columns
+                df['Timestamp'] = pd.to_datetime(
+                    df['Completed Date (UTC)'] + ' ' + df['Completed Time (UTC)']
+                ).dt.tz_localize(None)
+                
+                # Determine Transaction Type
+                def get_transaction_type(row):
+                    if row['Transaction Type'] == 'Withdrawal':
+                        return 'Send'
+                    elif (row['Transaction Type'] == 'Trade' and 
+                          row['Amount 1'] < 0 and 
+                          row['Currency 1'] == 'USD' and 
+                          row['Currency 2'] == 'BTC'):
+                        return 'Buy'
+                    elif (row['Transaction Type'] == 'Trade' and 
+                          ((row['Currency 1'] == 'BTC' and row['Currency 2'] == 'USD') or
+                           (row['Currency 1'] == 'USD' and row['Currency 2'] == 'BTC' and 
+                            row['Amount 1'] > 0 and row['Amount 2'] < 0))):
+                        return 'Sell'
+                    return 'Unknown'
+                
+                df['Type'] = df.apply(get_transaction_type, axis=1)
+                
+                # Determine Asset
+                df['Asset'] = df.apply(
+                    lambda row: row['Currency 1'] if row['Currency 2'] == 'USD' else row['Currency 2'],
+                    axis=1
+                )
+                
+                # Map other fields
+                df['ID'] = df['Transaction ID']
+                df['Amount'] = pd.to_numeric(df['Amount 2'], errors='coerce').fillna(0)
+                df['Total USD'] = pd.to_numeric(df['Amount 1'], errors='coerce').fillna(0)
+                
+                # Handle fees - replace NaN with 0 and convert to numeric
+                df['Fee 1'] = pd.to_numeric(df['Fee 1'], errors='coerce').fillna(0)
+                df['Fee 2'] = pd.to_numeric(df['Fee 2'], errors='coerce').fillna(0)
+                df['Fee'] = df['Fee 1'].abs() + df['Fee 2'].abs()
+                
+                # Handle Spot Price
+                df['Spot Price'] = pd.to_numeric(df['BTC Price'], errors='coerce').fillna(0)
+                
+                # Calculate Subtotal
+                df['Subtotal'] = df['Total USD'].abs() - df['Fee']
+                
+                # Add empty Notes column
+                df['Notes'] = ''
             
-            # Create timestamp from date and time columns
-            df['Timestamp'] = pd.to_datetime(
-                df['Completed Date (UTC)'] + ' ' + df['Completed Time (UTC)']
-            ).dt.tz_localize(None)
-            
-            # Set Source
-            df['Source'] = 'Strike'
-            
-            # Determine Transaction Type
-            def get_transaction_type(row):
-                if row['Transaction Type'] == 'Withdrawal':
-                    return 'Send'
-                elif (row['Transaction Type'] == 'Trade' and 
-                      row['Amount 1'] < 0 and 
-                      row['Currency 1'] == 'USD' and 
-                      row['Currency 2'] == 'BTC'):
-                    return 'Buy'
-                elif (row['Transaction Type'] == 'Trade' and 
-                      ((row['Currency 1'] == 'BTC' and row['Currency 2'] == 'USD') or
-                       (row['Currency 1'] == 'USD' and row['Currency 2'] == 'BTC' and 
-                        row['Amount 1'] > 0 and row['Amount 2'] < 0))):
-                    return 'Sell'
-                return 'Unknown'
-            
-            df['Type'] = df.apply(get_transaction_type, axis=1)
-            
-            # Determine Asset
-            df['Asset'] = df.apply(
-                lambda row: row['Currency 1'] if row['Currency 2'] == 'USD' else row['Currency 2'],
-                axis=1
-            )
-            
-            # Map other fields
-            df['ID'] = df['Transaction ID']
-            df['Amount'] = pd.to_numeric(df['Amount 2'], errors='coerce').fillna(0)
-            df['Total USD'] = pd.to_numeric(df['Amount 1'], errors='coerce').fillna(0)
-            
-            # Handle fees - replace NaN with 0 and convert to numeric
-            df['Fee 1'] = pd.to_numeric(df['Fee 1'], errors='coerce').fillna(0)
-            df['Fee 2'] = pd.to_numeric(df['Fee 2'], errors='coerce').fillna(0)
-            df['Fee'] = df['Fee 1'].abs() + df['Fee 2'].abs()
-            
-            # Handle Spot Price
-            df['Spot Price'] = pd.to_numeric(df['BTC Price'], errors='coerce').fillna(0)
-            
-            # Calculate Subtotal
-            df['Subtotal'] = df['Total USD'].abs() - df['Fee']
-            
-            # Add empty Notes column
-            df['Notes'] = ''
+            # Convert to Decimal for consistency
+            numeric_columns = ['Amount', 'Subtotal', 'Fee', 'Total USD', 'Spot Price']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = df[col].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else Decimal('0'))
             
             # Select and reorder columns
             result_df = df[[
@@ -659,12 +740,13 @@ def load_strike_transactions():
         
         if dfs:
             final_df = pd.concat(dfs, ignore_index=True)
-
             return final_df
         return pd.DataFrame()
         
     except Exception as e:
         print(f"Error loading Strike transactions: {str(e)}")
+        import traceback
+        traceback.print_exc()  # This will print the full error traceback
         return pd.DataFrame()
 
 def load_cashapp_transactions():
@@ -1240,7 +1322,7 @@ def get_historical_price(asset: str, timestamp: datetime) -> float:
         time.sleep(0.25)
         
         # Make API request
-        response = requests.get(url, params=params, headers=headers)
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         data = response.json()
         
         if response.status_code != 200:
@@ -1258,7 +1340,7 @@ def get_historical_price(asset: str, timestamp: datetime) -> float:
                 params['toTs'] = unix_time
                 
                 time.sleep(0.25)  # Add delay for second request
-                response = requests.get(url, params=params, headers=headers)
+                response = requests.get(url, params=params, headers=headers, timeout=10)
                 data = response.json()
                 
                 if response.status_code == 200 and data.get('Response') == 'Success' and data.get('Data', {}).get('Data'):
@@ -1286,6 +1368,9 @@ def get_historical_price(asset: str, timestamp: datetime) -> float:
         save_price_cache(price_cache)
         return 0
         
+    except requests.exceptions.Timeout:
+        print(f"Timeout fetching price for {display_name}")
+        return 0
     except requests.exceptions.RequestException as e:
         msg = f"Network error fetching price for {display_name}: {str(e)}"
         log_error(msg)
@@ -1928,6 +2013,7 @@ def read_transaction_file(file_path):
         # Try Excel first
         if file_path_str.lower().endswith('.xlsx'):
             return pd.read_excel(file_path)
+            
         # Try CSV with different encodings and delimiters
         elif file_path_str.lower().endswith('.csv'):
             # For Coinbase CSV, we need to find the actual header row
@@ -1950,7 +2036,53 @@ def read_transaction_file(file_path):
                 except:
                     pass
             
-            # For other CSV files, try different encodings
+            # For csv_version files, try different delimiters and error handling modes
+            if 'csv_version-' in file_path_str.lower():
+                # Try with error_bad_lines=False first
+                for delimiter in [',', ';', '\t']:
+                    try:
+                        df = pd.read_csv(file_path, 
+                                       delimiter=delimiter, 
+                                       encoding='utf-8',
+                                       on_bad_lines='skip',  # Skip problematic lines
+                                       engine='python')  # Use python engine for more flexibility
+                        if not df.empty and 'Timestamp' in df.columns:
+                            return df
+                    except:
+                        continue
+                
+                # If that fails, try with quoted fields
+                for delimiter in [',', ';', '\t']:
+                    try:
+                        df = pd.read_csv(file_path, 
+                                       delimiter=delimiter,
+                                       encoding='utf-8',
+                                       quoting=csv.QUOTE_ALL,  # Handle all fields as quoted
+                                       engine='python')
+                        if not df.empty and 'Timestamp' in df.columns:
+                            return df
+                    except:
+                        continue
+                        
+                # Last resort: try to read raw file and parse manually
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                    # Look for header row
+                    header_idx = -1
+                    for i, line in enumerate(lines):
+                        if 'Timestamp' in line:
+                            header_idx = i
+                            break
+                    if header_idx >= 0:
+                        # Use StringIO to create a file-like object with just the valid data
+                        from io import StringIO
+                        valid_data = StringIO('\n'.join(lines[header_idx:]))
+                        return pd.read_csv(valid_data)
+                except:
+                    pass
+            
+            # For all other CSV files, try different encodings
             try:
                 return pd.read_csv(file_path, encoding='utf-8')
             except UnicodeDecodeError:
