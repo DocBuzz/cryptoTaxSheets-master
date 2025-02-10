@@ -40,7 +40,7 @@ __** INSTRUCTIONS **__
   -  python 1-merge_crypto_txs.py
   -  python 2-calculate_all_gains.py
 
-  - (+PRO TIP+  From command line, if you're in the same directory as the files, you can just type "python 1" and press the TAB button, and same with "python 2" (TAB key))
+  - **(+PRO TIP+  From command line, if you're in the same directory as the files, you can just type "python 1-" and press the TAB button, and same with "python 2-" (TAB key))**
  
 (6) If you need to add some transactions that were made outside of the 5 supported exchanges, the first script will automatically create a file called "add-manual-transactions.xlsx" for you to add any transactions made outside the ~5 supported exchanges.  Include as much info as possible, and then run 'python 1-merge_crypto_txs.py' again. This will ensure that ALL your transactions make it to the master transaction file, and then give you the most true and accurate profit/loss calculations for all the different accounting methods.
 
