@@ -20,6 +20,7 @@ __** INSTRUCTIONS **__
   - CashApp: https://cash.app/account/activity
 
     (Must use desktop site.  Click "Download" to the right of the transaction filter)
+
     
   - **(Try to include the exchange name in the filename for your own benefit, as well as the benefit of these scripts...)**
 
