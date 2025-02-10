@@ -139,7 +139,7 @@ def load_coinbase_transactions():
         
         coinbase_files = [
             f for f in files 
-            if 'coinbase' in f.lower() 
+            if ('coinbase' in f.lower() or 'csv_version-' in f.lower())
             and any(pattern in f.lower() for pattern in transaction_patterns)
             and 'pro' not in f.lower()  # Exclude Coinbase Pro files
         ]
@@ -282,12 +282,13 @@ def load_coinbase_pro_transactions():
         dfs = []
         files = glob.glob("*.xlsx") + glob.glob("*.csv")
         
-        # Match any combination of fills/fill and coinbasepro/coinbase-pro
+        # Match any file containing 'fills' OR the standard pro patterns
         fill_patterns = ['fill', 'fills']
         pro_patterns = ['coinbasepro', 'coinbase-pro']
         pro_files = [
             f for f in files 
-            if any(pro in f.lower() for pro in pro_patterns)
+            if ('fills' in f.lower() or  # Add this new pattern
+                any(pro in f.lower() for pro in pro_patterns))
             and any(fill in f.lower() for fill in fill_patterns)
         ]
         
@@ -346,7 +347,7 @@ def load_kraken_transactions():
         files = glob.glob("*.xlsx") + glob.glob("*.csv")
         
         # Find ledger file
-        ledger_patterns = ['kraken-ledgers', 'kraken_ledgers', 'kraken-ledger', 'kraken_ledger']
+        ledger_patterns = ['kraken-ledgers', 'kraken_ledgers', 'kraken-ledger', 'kraken_ledger', 'ledgers.csv']
         ledger_files = [f for f in files if any(pattern in f.lower() for pattern in ledger_patterns)]
         
         if not ledger_files:
@@ -359,7 +360,7 @@ def load_kraken_transactions():
         ledger_df = read_transaction_file(ledger_file).reset_index(drop=True)
         
         # Find trades file
-        trades_patterns = ['kraken-trades', 'kraken_trades', 'kraken-trade', 'kraken_trade']
+        trades_patterns = ['kraken-trades', 'kraken_trades', 'kraken-trade', 'kraken_trade', 'trades.csv']
         trades_files = [f for f in files if any(pattern in f.lower() for pattern in trades_patterns)]
         
         trades_df = pd.DataFrame()
@@ -573,7 +574,7 @@ def load_strike_transactions():
 
         strike_files = [
             f for f in files 
-            if 'strike' in f.lower() 
+            if ('strike' in f.lower() or 'btc-account-' in f.lower())
             and any(pattern in f.lower() for pattern in transaction_patterns)
         ]
         
