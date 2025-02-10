@@ -28,7 +28,7 @@ __** INSTRUCTIONS **__
   - *NOTE* -- **Try to include the exchange name in the filename for your own benefit, as well as the benefit of these scripts...**
 
 (2) Place .CSV [or .XLSX converted] exchange files into the same folder as these 2 python scripts.
-  - If using Kraken, the kraken-ledgers file is essential, but the kraken-trades also helps with grouping multiple transactions by each actual "order".
+  - If using Kraken, the kraken-ledgers file is essential, but the kraken-trades also helps with grouping multiple transactions by each "order".
 
 (3) Install Python and PIP (which is installed with Python, just need to check a box to make sure it installs).
   - https://www.python.org/downloads/
