@@ -13,13 +13,13 @@ __** INSTRUCTIONS **__
     (Use 'Fills' Report Type, .CSV format, and you must download each year individually thru 2022, when it became "Coinbase Advanced")
   - Kraken: https://pro.kraken.com/app/settings/documents
 
-    (Under 'Exports', click "Create Report", choose 'Ledgers' *and* 'Trades' types, each with widest date ranges and .CSV format... then UNZIP!)
+    (Under 'Exports', click 'Create Report', choose 'Ledgers' *and* 'Trades' types, each with widest date ranges and .CSV format... then UNZIP!)
   - Strike: https://dashboard.strike.me/transactions
 
     (Click "Generate Report" with widest date ranges)
   - CashApp: https://cash.app/account/activity
 
-    (Must use desktop site.  Click "Download" to the right of the transaction filter)
+    (Must use desktop site.  Click 'Download' to the right of the transaction filter)
     
   - *NOTE* -- **Try to include the exchange name in the filename for your own benefit, as well as the benefit of these scripts...**
 
