@@ -11,11 +11,11 @@ __** INSTRUCTIONS **__
     
   - Coinbase Pro: https://accounts.coinbase.com/statements/pro
 
-    (Use 'Fills' Report Type, .CSV format, and you must download each year individually thru 2022, when it became "Coinbase Advanced")
+    (**Use 'Fills' Report Type**, .CSV format, and you must download each year individually thru 2022, when it became "Coinbase Advanced")
     
   - Kraken: https://pro.kraken.com/app/settings/documents
 
-    (Under 'Exports', click 'Create Report', choose 'Ledgers' *and* 'Trades' types, each with widest date ranges and .CSV format... then UNZIP!)
+    (Under 'Exports', click 'Create Report', **choose 'Ledgers' *and* 'Trades' types**, each with widest date ranges and .CSV format... **then UNZIP!**)
     
   - Strike: https://dashboard.strike.me/transactions
 
