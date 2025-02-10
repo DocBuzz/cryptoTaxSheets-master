@@ -5,7 +5,7 @@ __** INSTRUCTIONS **__
 ======================
 
 (1) Retrieve .CSV files from these locations:
-  - Coinbase: https://accounts.coinbase.com/statements (use Custom Date range from before first transaction until today and .CSV format)
+  - Coinbase: https://accounts.coinbase.com/statements (Under 'Generate custom statement', use Custom Date range from before first transaction until today, and select .CSV format)
   - Coinbase Pro: https://accounts.coinbase.com/statements/pro (use 'Fills' Report Type, .CSV format, and you must download each year individually thru 2022, when it became "Coinbase Advanced")
   - Kraken: https://pro.kraken.com/app/settings/documents (Under 'Exports', click "Create Report" with widest date ranges and .CSV format for both 'Ledgers' and 'Trades' types)
   - Strike: https://dashboard.strike.me/transactions (click "Generate Report" with widest date ranges)
