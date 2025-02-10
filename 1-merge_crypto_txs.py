@@ -644,6 +644,9 @@ def load_strike_transactions():
                 df['Type'] = df.apply(determine_type, axis=1)
                 df['Asset'] = 'BTC'  # Always BTC for Strike
                 
+                # Add Description to Notes if available
+                df['Notes'] = df['Description'] if 'Description' in df.columns else ''
+                
                 # Handle fees - convert BTC fees to USD if needed
                 df['Fee'] = pd.to_numeric(df['Fee Amount'].replace(r'[,]', '', regex=True), errors='coerce').fillna(0)
                 
@@ -665,8 +668,6 @@ def load_strike_transactions():
                     lambda row: row['Subtotal'] + (abs(row['Fee']) * (-1 if row['Type'] == 'Sell' else 1)),
                     axis=1
                 )
-                
-                df['Notes'] = ''
                 
             else:
                 # Original Strike format handling

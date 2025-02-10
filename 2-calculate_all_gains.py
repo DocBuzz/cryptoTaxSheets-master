@@ -1825,18 +1825,19 @@ def get_historical_price(asset: str, timestamp: datetime, current: int = None, t
 
         # Try minute data first if available
         if use_minute_data and (datetime.now() - rounded_timestamp).days <= 7:
-            url = f"https://min-api.cryptocompare.com/data/v2/histominute"
-            headers = {'authorization': CRYPTOCOMPARE_API_KEY}
+            url = 'https://min-api.cryptocompare.com/data/v2/histominute'
+            params['api_key'] = CRYPTOCOMPARE_API_KEY
         else:
             # Fall back to daily data
-            url = f"https://min-api.cryptocompare.com/data/v2/histoday"
-            headers = {}
+            url = 'https://min-api.cryptocompare.com/data/v2/histoday'
+        
+        headers = {}
         
         # Add delay to avoid rate limiting
         time.sleep(0.25)
         
-        # Make API request
-        response = requests.get(url, params=params, headers=headers)
+        # Make API request with timeout
+        response = requests.get(url, params=params, headers=headers, timeout=10)  # Add 10 second timeout
         data = response.json()
         
         if response.status_code != 200:
@@ -1882,11 +1883,13 @@ def get_historical_price(asset: str, timestamp: datetime, current: int = None, t
         save_price_cache(price_cache)
         return 0
         
+    except requests.exceptions.Timeout:
+        print(f"Processing {count_str}{display_name} at {date_str} - TIMEOUT - Price: $0.00")
+        return 0
     except requests.exceptions.RequestException as e:
         logging.error(f"Network error fetching price for {display_name}: {str(e)}")
         print(f"Processing {count_str}{display_name} at {date_str} - FAILED - Price: $0.00")
         return 0
-        
     except Exception as e:
         logging.error(f"Unexpected error getting price for {display_name}: {str(e)}")
         print(f"Processing {count_str}{display_name} at {date_str} - FAILED - Price: $0.00")
