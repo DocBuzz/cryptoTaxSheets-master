@@ -21,7 +21,7 @@ __** INSTRUCTIONS **__
 
     (Must use desktop site.  Click "Download" to the right of the transaction filter)
     
-  - *NOTE* **Try to include the exchange name in the filename for your own benefit, as well as the benefit of these scripts...**
+  - *NOTE* -- **Try to include the exchange name in the filename for your own benefit, as well as the benefit of these scripts...**
 
 (2) Place .CSV [or .XLSX converted] exchange files into the same folder as these 2 python scripts.
   - If using Kraken, the kraken-ledgers file is essential, but the kraken-trades also helps with grouping multiple transactions by each actual "order".
