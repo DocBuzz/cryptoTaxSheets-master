@@ -166,22 +166,24 @@ def load_coinbase_transactions():
         
         if not coinbase_files:
             print("Warning: No Coinbase transaction files found. Skipping Coinbase transactions.")
-            return pd.DataFrame()
+            return pd.DataFrame(), []
+            
+        dfs = []
         
-        dfs = []  # List to store DataFrames from each file
-        
-        print(f"  **  Loading Coinbase transactions...\n")
-        for file in coinbase_files:  # Process each file
+        for file in coinbase_files:
             print(f" {file}")
             df = read_transaction_file(file)
             
             if df.empty:
                 continue
                 
+            # Add file source to DataFrame
+            df['Source File'] = file
+            
             # Skip the header row if it's just "Timestamp"
             if df['Timestamp'].iloc[0] == 'Timestamp':
                 df = df.iloc[1:]
-                
+            
             # Now continue with the normal processing
             df['Source'] = 'Coinbase'
             
@@ -298,12 +300,12 @@ def load_coinbase_transactions():
         
         # Combine all DataFrames
         if dfs:
-            return pd.concat(dfs, ignore_index=True)
-        return pd.DataFrame()
+            return pd.concat(dfs, ignore_index=True), coinbase_files
+        return pd.DataFrame(), []
         
     except Exception as e:
         print(f"Error loading Coinbase transactions: {str(e)}")
-        return pd.DataFrame()
+        return pd.DataFrame(), []
 
 def load_coinbase_pro_transactions():
     # Load and process Coinbase Pro trades, matching fills with their orders
@@ -324,15 +326,17 @@ def load_coinbase_pro_transactions():
         
         if not pro_files:
             print("Warning: No Coinbase Pro files found. Skipping Coinbase Pro transactions.")
-            return pd.DataFrame()
+            return pd.DataFrame(), []
         
-        print(f"  **  Loading Coinbase Pro transactions...\n")
         for file in pro_files:
             print(f" {file}")
             df = read_transaction_file(file)
-            
+
             if df.empty:
                 continue
+            
+            # Add file source to DataFrame
+            df['Source File'] = file
             
             if 'portfolio' in df.columns:
                 df = df.drop('portfolio', axis=1)
@@ -362,13 +366,13 @@ def load_coinbase_pro_transactions():
                 axis=1
             )
             
-            dfs.append(df[['ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes']])
+            dfs.append(df[['ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes', 'Source File']])
         
-        return pd.concat(dfs) if dfs else pd.DataFrame()
+        return pd.concat(dfs) if dfs else pd.DataFrame(), pro_files
         
     except Exception as e:
         print(f"Error loading Coinbase Pro transactions: {str(e)}")
-        return pd.DataFrame()
+        return pd.DataFrame(), []
 
 def load_kraken_transactions():
     # Load and combine Kraken ledger entries with trade history
@@ -382,12 +386,14 @@ def load_kraken_transactions():
         
         if not ledger_files:
             print("Warning: No Kraken ledger file found. Skipping Kraken transactions.")
-            return pd.DataFrame()
+            return pd.DataFrame(), []
             
         ledger_file = ledger_files[0]
-        print(f"  **  Loading Kraken ledger...\n")
         print(f" {ledger_file}")
         ledger_df = read_transaction_file(ledger_file).reset_index(drop=True)
+        
+        # Add file source to DataFrame
+        ledger_df['Source File'] = ledger_file
         
         # Find trades file
         trades_patterns = ['kraken-trades', 'kraken_trades', 'kraken-trade', 'kraken_trade', 'trades.csv']
@@ -398,9 +404,9 @@ def load_kraken_transactions():
             print("Warning: No Kraken trades file found. Proceeding with ledger only.")
         elif trades_files:
             trades_file = trades_files[0]
-            print(f"\n  **  Loading Kraken trades...\n")
             print(f" {trades_file}")
             trades_df = read_transaction_file(trades_file).reset_index(drop=True)
+            trades_df['Source File'] = trades_file
         
         # Create a mapping of txid to ordertxid from trades file
         ordertxid_map = {}
@@ -429,7 +435,11 @@ def load_kraken_transactions():
         ledger_df['asset'] = ledger_df['asset'].str.split('.').str[0]
         
         # Create empty DataFrame for results with correct columns
-        result_columns = ['ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes']
+        result_columns = [
+            'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
+            'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes',
+            'Source File'  # Add this column
+        ]
         all_transactions = pd.DataFrame(columns=result_columns)
         
         # Process trades
@@ -588,11 +598,11 @@ def load_kraken_transactions():
                         trades_df['Notes'] = ''
                     trades_df.loc[idx, 'Notes'] = f"Order: {row['ordertxid']} " + str(trades_df.loc[idx, 'Notes'])
         
-        return all_transactions[result_columns]
+        return all_transactions[result_columns], ledger_files
         
     except Exception as e:
         print(f"Error loading Kraken transactions: {str(e)}")
-        return pd.DataFrame(columns=['ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 'Total USD', 'Fee', 'Spot Price', 'Notes'])
+        return pd.DataFrame(columns=['ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount', 'Total USD', 'Fee', 'Spot Price', 'Notes']), []
 
 def load_strike_transactions():
     # Load and process Strike Bitcoin transactions
@@ -609,17 +619,20 @@ def load_strike_transactions():
         
         if not strike_files:
             print("Warning: No Strike transaction files found. Skipping Strike transactions.")
-            return pd.DataFrame()
+            return pd.DataFrame(), []  # Return empty DataFrame and empty file list
             
         dfs = []
+        processed_files = []  # Track which files we actually process
         
-        print(f"  **  Loading Strike transactions...\n")
         for file in strike_files:
             print(f" {file}")
             df = read_transaction_file(file)
-            
+
             if df.empty:
                 continue
+            
+            # Add file source to DataFrame
+            df['Source File'] = file  # Add this line to track which file each row came from
             
             # Check if this is the new BTC account format
             if 'Time (UTC)' in df.columns or 'BTC-account-' in file:
@@ -734,21 +747,20 @@ def load_strike_transactions():
             # Select and reorder columns
             result_df = df[[
                 'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
-                'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes'
+                'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes',
+                'Source File'  # Include the source file column
             ]]
             
             dfs.append(result_df)
+            processed_files.append(file)
         
         if dfs:
-            final_df = pd.concat(dfs, ignore_index=True)
-            return final_df
-        return pd.DataFrame()
+            return pd.concat(dfs, ignore_index=True), processed_files
+        return pd.DataFrame(), []
         
     except Exception as e:
         print(f"Error loading Strike transactions: {str(e)}")
-        import traceback
-        traceback.print_exc()  # This will print the full error traceback
-        return pd.DataFrame()
+        return pd.DataFrame(), []
 
 def load_cashapp_transactions():
     # Load and process CashApp Bitcoin transactions
@@ -765,19 +777,21 @@ def load_cashapp_transactions():
         
         if not cashapp_files:
             print("Warning: No CashApp files found. Skipping CashApp transactions.")
-            return pd.DataFrame()
+            return pd.DataFrame(), []
             
         dfs = []
         transaction_counter = 1  # For generating IDs
         
         for file in cashapp_files:
-            print(f"  **  Loading CashApp transactions...\n")
             print(f" {file}")
             df = read_transaction_file(file)
             
             if df.empty:
                 continue
                 
+            # Add file source to DataFrame
+            df['Source File'] = file
+            
             # Filter rows based on Transaction Type and Status
             df = df[
                 (df['Transaction Type'].str.startswith('Bitcoin', na=False)) & 
@@ -882,21 +896,21 @@ def load_cashapp_transactions():
             # Select and reorder columns
             result_df = df[[
                 'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
-                'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes'
+                'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes', 'Source File'
             ]]
             
             dfs.append(result_df)
         
         if dfs:
             final_df = pd.concat(dfs, ignore_index=True)
-            return final_df
-        return pd.DataFrame()
+            return final_df, cashapp_files
+        return pd.DataFrame(), []
         
     except Exception as e:
         print(f"Error loading CashApp transactions: {str(e)}")
         import traceback
         traceback.print_exc()  # This will print the full error traceback
-        return pd.DataFrame()
+        return pd.DataFrame(), []
 
 def clean_price_string(value):
     # Clean up price strings to numeric values and removes $ signs and commas
@@ -1506,17 +1520,52 @@ def merge_all_transactions():
     try:
         print("\n\nStarting merge process...\n")
         
-        # Load all transaction data
-        coinbase_df = load_coinbase_transactions()
+        # Load all transaction data and track source files
+        source_files = {}  # Dictionary to track which files created each DataFrame
+        
+        print(f"  **  Loading Coinbase transactions...\n")
+        coinbase_df, coinbase_files = load_coinbase_transactions()
+        source_files['Coinbase'] = coinbase_files
         print(f"")
-        coinbase_pro_df = load_coinbase_pro_transactions()
+        
+        print(f"  **  Loading Coinbase Pro transactions...\n")
+        coinbase_pro_df, pro_files = load_coinbase_pro_transactions()
+        source_files['Coinbase Pro'] = pro_files
         print(f"")
-        kraken_df = load_kraken_transactions()
+        
+        print(f"  **  Loading Kraken transactions...\n")
+        kraken_df, kraken_files = load_kraken_transactions()
+        source_files['Kraken'] = kraken_files
         print(f"")
-        strike_df = load_strike_transactions()
+        
+        print(f"  **  Loading Strike transactions...\n")
+        strike_df, strike_files = load_strike_transactions()
+        source_files['Strike'] = strike_files
         print(f"")
-        cashapp_df = load_cashapp_transactions()
+        
+        print(f"  **  Loading CashApp transactions...\n")
+        cashapp_df, cashapp_files = load_cashapp_transactions()
+        source_files['CashApp'] = cashapp_files
         print(f"")
+        
+        # Just do basic NaN filling for now - no calculations yet
+        all_dfs = []
+        df_sources = []  # Track which source/file each DataFrame came from
+        
+        for df, source in [(coinbase_df, 'Coinbase'), 
+                          (coinbase_pro_df, 'Coinbase Pro'),
+                          (kraken_df, 'Kraken'),
+                          (strike_df, 'Strike'),
+                          (cashapp_df, 'CashApp')]:
+            if not df.empty:
+                df = df.copy()
+                df['Notes'] = df['Notes'].fillna('')
+                df['Fee'] = df['Fee'].fillna(0)
+                df['Spot Price'] = df['Spot Price'].fillna(0)
+                df['Subtotal'] = df['Subtotal'].fillna(0)
+                df['Total USD'] = df['Total USD'].fillna(0)
+                all_dfs.append(df)
+                df_sources.append(source)
         
         # Check for existing manual transactions
         manual_file = Path('add-manual-transactions.xlsx')
@@ -1529,26 +1578,19 @@ def merge_all_transactions():
                     manual_df['Timestamp'] = pd.to_datetime(manual_df['Timestamp'])
                     manual_df['Source'] = manual_df['Source'].fillna('Manual')
                     print(f"\nFound {len(manual_df)} manual transactions to process")
+                    # Add manual transactions to all_dfs and df_sources
+                    all_dfs.append(manual_df)
+                    df_sources.append('Manual')
+                    source_files['Manual'] = [str(manual_file)]  # Add to source files
             except Exception as e:
                 print(f"Error reading manual transactions: {str(e)}")
                 manual_df = pd.DataFrame()
-        
-        # Just do basic NaN filling for now - no calculations yet
-        all_dfs = []
-        for df in [coinbase_df, coinbase_pro_df, kraken_df, strike_df, cashapp_df, manual_df]:
-            if not df.empty:
-                df = df.copy()
-                df['Notes'] = df['Notes'].fillna('')
-                df['Fee'] = df['Fee'].fillna(0)
-                df['Spot Price'] = df['Spot Price'].fillna(0)
-                df['Subtotal'] = df['Subtotal'].fillna(0)
-                df['Total USD'] = df['Total USD'].fillna(0)
-                all_dfs.append(df)
-        
+
+        # Check if all DataFrames are empty
         if all(df.empty for df in all_dfs):
             print("Error: No transaction data found in any files.")
             return
-        
+
         # Force timezone-naive for all DataFrames before concat
         for df in all_dfs:
             if not df.empty and 'Timestamp' in df.columns:
@@ -1561,8 +1603,75 @@ def merge_all_transactions():
             'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes'
         ]
         
-        # Combine all transactions
-        all_transactions = safe_concat(all_dfs, columns=required_columns, ignore_index=True)
+        # Check for duplicates across files
+        transaction_tracker = {}  # Will store {transaction_key: (source, filename, row)}
+        duplicate_warnings = []   # Store warnings about potential duplicates
+        unique_transactions = []  # Store non-duplicate transactions
+        
+        # Process each DataFrame separately to detect duplicates
+        for file_idx, df in enumerate(all_dfs):
+            if df.empty:
+                continue
+                
+            source = df_sources[file_idx]
+            
+            for idx, row in df.iterrows():
+                try:
+                    # Use exact timestamp
+                    ts = pd.to_datetime(row['Timestamp'])
+                    
+                    # Create key from essential transaction attributes
+                    tx_key = (
+                        ts,                     # Timestamp
+                        row['Type'],            # Transaction type
+                        row['Asset'],           # Asset type
+                        float(row['Amount']),   # Amount
+                        row['Source']           # Source exchange
+                    )
+                    
+                    # If we've seen this transaction before
+                    if tx_key in transaction_tracker:
+                        prev_source, prev_file, prev_row = transaction_tracker[tx_key]
+                        
+                        # Get current file name - use Source File if available, otherwise use source
+                        curr_file = row.get('Source File', source)
+                        
+                        # Only warn if transactions are from different files
+                        if prev_file != curr_file:
+                            warning = (
+                                f"\nPossible duplicate transaction detected:\n"
+                                f"File 1: {prev_file}\n"
+                                f"File 2: {curr_file}\n"
+                                f"File 1 ID: {prev_row['ID']}\n"
+                                f"File 2 ID: {row['ID']}\n"
+                                f"Timestamp: {ts}\n"
+                                f"Type: {row['Type']}\n"
+                                f"Asset: {row['Asset']}\n"
+                                f"Amount: {row['Amount']}\n"
+                                f"Source: {row['Source']}"
+                            )
+                            duplicate_warnings.append(warning)
+                            continue
+                    
+                    # Store this transaction with its source file
+                    curr_file = row.get('Source File', source)  # Use Source File if available, otherwise use source
+                    transaction_tracker[tx_key] = (source, curr_file, row)
+                    unique_transactions.append(row)
+                    
+                except Exception as e:
+                    print(f"Warning: Error processing row for duplicate detection: {str(e)}")
+                    unique_transactions.append(row)  # Include row if error occurs during duplicate check
+        
+        # If duplicates were found, print warnings
+        if duplicate_warnings:
+            print("\n=== DUPLICATE TRANSACTION WARNINGS ===")
+            for warning in duplicate_warnings:
+                print(warning)
+            print("\nPlease review these transactions and remove duplicate files if necessary.")
+            print("Processing will continue with duplicates removed.\n")
+        
+        # Create DataFrame from unique transactions
+        all_transactions = pd.DataFrame(unique_transactions)
         
         # Standardize signs
         all_transactions = standardize_transaction_values(all_transactions)
@@ -1577,7 +1686,7 @@ def merge_all_transactions():
         numeric_columns = ['Amount', 'Subtotal', 'Total USD', 'Fee']
         for col in numeric_columns:
             all_transactions[col] = pd.to_numeric(all_transactions[col], errors='coerce')
-        
+            
         # Clean and convert spot prices to numeric values
         all_transactions['Spot Price'] = all_transactions['Spot Price'].apply(clean_price_string)
         
@@ -1590,17 +1699,6 @@ def merge_all_transactions():
         
         # Update missing spot prices and track historical prices
         all_transactions, historical_cells, hist_calculated = update_missing_spot_prices(all_transactions)
-        
-        # Clean up and standardize
-        all_transactions['Timestamp'] = pd.to_datetime(all_transactions['Timestamp'])
-        
-        # Convert numeric columns
-        numeric_columns = ['Amount', 'Subtotal', 'Total USD', 'Fee']
-        for col in numeric_columns:
-            all_transactions[col] = pd.to_numeric(all_transactions[col], errors='coerce')
-        
-        # Clean spot prices
-        all_transactions['Spot Price'] = all_transactions['Spot Price'].apply(clean_price_string)
         
         # Merge the calculated cells from historical prices
         for col, indices in hist_calculated.items():
@@ -1651,10 +1749,7 @@ def merge_all_transactions():
         if not manual_file.exists():
             print("   ***********************************")
             print("\nCreating manual transactions template file...")
-            template_df = pd.DataFrame(columns=[
-                'ID', 'Timestamp', 'Source', 'Type', 'Asset', 'Amount',
-                'Subtotal', 'Fee', 'Total USD', 'Spot Price', 'Notes'
-            ])
+            template_df = pd.DataFrame(columns=required_columns)
             
             with pd.ExcelWriter(manual_file, engine='openpyxl') as writer:
                 template_df.to_excel(writer, index=False)
@@ -1728,7 +1823,6 @@ def merge_all_transactions():
 
     except Exception as e:
         print(f"Error merging transactions: {str(e)}")
-
 
 def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame = None, sheet_name: str = '', calculated_cells=None, historical_cells=None):
     # Make the Excel file easy to read and use:

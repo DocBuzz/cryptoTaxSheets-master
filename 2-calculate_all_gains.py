@@ -22,6 +22,7 @@ import time                                     # For adding delays between API 
 import json                                     # For reading/writing cache files
 from pathlib import Path                        # For handling file paths
 import openpyxl                                 # For Excel file operations
+from openpyxl.styles import PatternFill         # For adding conditional formatting
 
 # Important date when LUNA became LUNC (Luna Classic)
 LUNA_TRANSITION_DATE = datetime(2022, 5, 28)
@@ -31,7 +32,7 @@ NU_TRANSITION_DATE = datetime(2023, 2, 6)
 
 # Set up logging to only create the log file if an error is actually logged
 class ErrorOnlyFileHandler(logging.FileHandler):
-    """Only creates the log file if an error is actually logged"""
+    #Only creates the log file if an error is actually logged
     def __init__(self, filename, mode='a', encoding=None, delay=True):  # Set delay=True
         super().__init__(filename, mode, encoding, delay)
         self.error_occurred = False
@@ -514,6 +515,9 @@ class AssetTracker:
         total_cost_basis = sum(lot.remaining * lot.cost_per_unit for lot in valid_lots)
         total_fees = sum(lot.cost_basis - (lot.amount * lot.cost_per_unit) for lot in valid_lots)
         
+        # Get all lots with remaining amounts
+        lots_with_balance = [lot for lot in valid_lots if lot.remaining > 0]
+        
         # Calculate average cost basis
         avg_cost_basis = (
             (total_cost_basis / total_amount) if total_amount > 0 
@@ -595,14 +599,15 @@ class AssetTracker:
             'unrealized_pl': unrealized_pl,
             'unrealized_pl_pct': unrealized_pl_pct,
             'exchange_distribution': exchange_distribution,
-            'lot_count': len([lot for lot in valid_lots if lot.remaining > 0]),
+            'lot_count': len(lots_with_balance),  # Use actual count of lots with balance
             'last_tx_date': last_tx_date,
             'days_held': days_held,
             'avg_hold_time': avg_hold_time,
             'long_term_amount': long_term_amount,
             'short_term_amount': short_term_amount,
             'lowest_price': lowest_price,
-            'highest_price': highest_price
+            'highest_price': highest_price,
+            'lots': lots_with_balance  # Add all lots with remaining balance
         }
 
     def process_deposit_with_send(self, deposit: Dict, matching_send: Dict) -> None:
@@ -1319,13 +1324,23 @@ def generate_excel_report(yearly_data: Dict, processor: TransactionProcessor, su
             for symbol, tracker in processor.asset_trackers.items():
                 holdings = tracker.get_current_holdings()
                 if holdings['total_amount'] > 0:
-                    holdings_rows.append(holdings)  # Use the entire holdings dictionary
+                    lots_remaining = []
+                    for lot in holdings['lots']:
+                        # Format amount with stripped trailing zeros
+                        amount_str = strip_trailing_zeros(lot.remaining)
+                        # Add markdown-style bold markers around lot ID and parentheses
+                        lots_remaining.append(f"{lot.lot_id} ({amount_str})")
+                    # Sort lots by lot_id
+                    lots_remaining.sort()
+                    holdings['lots_remaining'] = ', '.join(lots_remaining)
+                    holdings_rows.append(holdings)
+
             
             if holdings_rows:
                 holdings_df = pd.DataFrame(holdings_rows)
                 holdings_df = format_holdings_dataframe(holdings_df)
                 holdings_df.to_excel(writer, sheet_name='Current Holdings', index=False)
-                format_excel_worksheet(writer.sheets['Current Holdings'], holdings_df, 'Current Holdings')  # Changed
+                format_excel_worksheet(writer.sheets['Current Holdings'], holdings_df, 'Current Holdings')
             
             # Add transfers sheet
             transfer_rows = []
@@ -1567,13 +1582,26 @@ def validate_input_file(df: pd.DataFrame) -> None:
     if df['Type'].isna().any():
         raise ValueError("Transaction type cannot be null")
 
-def strip_trailing_zeros(value: Union[float, Decimal, str]) -> str:
-    #Remove trailing zeros from different input types while preserving significant decimal places
-
-    str_val = str(value)
-    if '.' in str_val:
-        return str_val.rstrip('0').rstrip('.')
-    return str_val
+def strip_trailing_zeros(number: Union[Decimal, float, str]) -> str:
+    #Format number as string, removing trailing zeros but preserving small values
+    if number is None:
+        return '0'
+        
+    # Convert to Decimal for consistent handling
+    if not isinstance(number, Decimal):
+        number = Decimal(str(number))
+    
+    # Format with enough decimal places to handle small numbers
+    formatted = f"{number:.12f}"
+    
+    # Remove trailing zeros after decimal point, but keep decimal if whole number
+    if '.' in formatted:
+        formatted = formatted.rstrip('0').rstrip('.')
+        if formatted == '0' and number != 0:
+            # For very small numbers, format with fixed decimal places
+            formatted = f"{number:.8f}"
+    
+    return formatted
 
 def normalize_usd(value: Union[float, Decimal, str]) -> Decimal:
     """Normalize USD amount to 2 decimal places"""
@@ -1971,7 +1999,10 @@ def compare_all_method_outputs():
     # Compare outputs from all accounting methods and highlight differences
     # Matches rows by Asset column when comparing across methods, except for
     # Transfers and Sale Details sheets which compare row by row
-
+    
+    # Define USD value columns (case-insensitive)
+    usd_columns = {'cost', 'basis', 'gain', 'loss', 'price', 'proceeds'}
+    
     methods = [m.name for m in AccountingMethod]
     workbooks = {
         method: openpyxl.load_workbook(f'ALL-crypto-profit-and-loss-{method}.xlsx')
@@ -1988,6 +2019,9 @@ def compare_all_method_outputs():
             
             ws = wb[sheet_name]
             
+            # Get column headers to identify USD columns
+            headers = [cell.value.lower() if cell.value else '' for cell in next(ws.rows)]
+            
             # Handle Transfers and Sale Details sheets with original row-by-row comparison
             if sheet_name in ['Transfers', 'Sale Details']:
                 max_rows = max(ws.max_row for wb in workbooks.values() for ws in [wb[sheet_name]] if sheet_name in wb.sheetnames)
@@ -1997,18 +2031,21 @@ def compare_all_method_outputs():
                 for row in range(2, max_rows + 1):  # Skip header row
                     for col in range(1, max_cols + 1):
                         values = set()
+                        header = headers[col-1]
                         
                         # Collect values from all methods
                         for m in methods:
                             if sheet_name in workbooks[m].sheetnames:
                                 cell = workbooks[m][sheet_name].cell(row=row, column=col)
                                 if cell.value is not None:
-                                    try:
-                                        if isinstance(cell.value, (int, float, Decimal)):
-                                            values.add(float(cell.value))
-                                        else:
+                                    # For USD columns, round to 2 decimal places
+                                    if any(usd_term in str(header).lower() for usd_term in usd_columns):
+                                        try:
+                                            val = str(cell.value).replace('$', '').replace(',', '')
+                                            values.add(round(float(val), 2))
+                                        except:
                                             values.add(str(cell.value))
-                                    except (ValueError, TypeError):
+                                    else:
                                         values.add(str(cell.value))
                         
                         # If values differ, highlight cells in all workbooks
@@ -2065,6 +2102,7 @@ def compare_all_method_outputs():
                 # Compare each column for this asset
                 for col in range(1, max_cols + 1):
                     values = set()
+                    header = headers[col-1]
                     
                     # Collect values from all methods for this asset and column
                     for m in methods:
@@ -2073,12 +2111,14 @@ def compare_all_method_outputs():
                                 row = asset_row_maps[m][asset]
                                 cell = workbooks[m][sheet_name].cell(row=row, column=col)
                                 if cell.value is not None:
-                                    try:
-                                        if isinstance(cell.value, (int, float, Decimal)):
-                                            values.add(float(cell.value))
-                                        else:
+                                    # For USD columns, round to 2 decimal places
+                                    if any(usd_term in str(header).lower() for usd_term in usd_columns):
+                                        try:
+                                            val = str(cell.value).replace('$', '').replace(',', '')
+                                            values.add(round(float(val), 2))
+                                        except:
                                             values.add(str(cell.value))
-                                    except (ValueError, TypeError):
+                                    else:
                                         values.add(str(cell.value))
                     
                     # If values differ, highlight cells in all workbooks
@@ -2139,6 +2179,17 @@ def format_holdings_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace('$', '').str.replace(',', ''), errors='coerce')
     
+    # Get the remaining lots for each asset from the lots data
+    lots_remaining = defaultdict(list)
+    if 'lots' in df.columns:  # Check if lots data exists
+        for idx, row in df.iterrows():
+            if row['lots']:  # If there are lots
+                for lot in row['lots']:
+                    if lot.remaining > 0:
+                        lots_remaining[row['symbol']].append(
+                            f"Lot {lot.lot_id}: {lot.remaining}"
+                        )
+    
     # Reorder columns
     column_order = [
         'symbol',                   # Asset
@@ -2151,15 +2202,16 @@ def format_holdings_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         'unrealized_pl',            # Unrealized Profit/Loss (USD)
         'unrealized_pl_pct',        # Unrealized Profit/Loss (%)
         'exchange_distribution',    # Current Exchange Distribution
-        'lot_count',                # Number of Lots
         'last_tx_date',             # Last Tax Lot Date
         'days_held',                # Days Held (from first Tx)
         'avg_hold_time',            # Average Hold Time
         'long_term_amount',         # Long-term Holdings Amount
         'short_term_amount',        # Short-term Holdings Amount
         'lowest_price',             # Lowest Purchase Price
-        'highest_price'             # Highest Purchase Price
-    ]
+        'highest_price',            # Highest Purchase Price
+        'lots_remaining',           # Lots Remaining
+        'lot_count'                 # Number of Lots
+        ]
     
     df = df[column_order]
     
@@ -2175,16 +2227,18 @@ def format_holdings_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         'Unrealized Profit/Loss (USD)',
         'Unrealized Profit/Loss (%)',
         'Current Exchange Distribution',
-        'Number of Lots',
         'Last Tax Lot Date',
         'Days Held (from first Tx)',
         'Average Hold Time (days)',
         'Long-term Holdings Amount',
         'Short-term Holdings Amount',
         'Lowest Purchase Price',
-        'Highest Purchase Price'
+        'Highest Purchase Price',
+        'Lots Remaining',
+        'Number of Lots'
     ]
     
+
     return df
 
 def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame = None, sheet_name: str = '') -> None:
