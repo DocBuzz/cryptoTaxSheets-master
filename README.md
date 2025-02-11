@@ -1,4 +1,4 @@
-# cryptoTaxSheets - v0.4 (2-part Python script)
+# cryptoTaxSheets - v0.5 (2-part Python script)
 
 ______________________
 __** INSTRUCTIONS **__
@@ -54,10 +54,10 @@ Creates 2 main spreadsheets:
 - #2 has several sub-sheets that has a ton of useful data, identifying which tax lot is sold for each accounting method, yearly gains in different categories (short-term sales, long-term sales, gifts, staking income), current holdings stats, detailed list of all sales, etc.
 
 Details:
+- It has quite a few verification/validation checks.  (i.e. - it will alert you if you're selling more than you acquired)
 - Fills in / Calculates missing blanks for Fee, Spot Price, etc. if there's enough data to calculate it (highlighted in yellow on the MASTER Tx List).
 - Otherwise, Fetches missing spot prices from CryptoCompare.com for your first run, and then caches all that spot price data (highlighted in red on the MASTER Tx List).
 - This script groups buys/sales together as best as it can, to lessen the complexities.
-- It has quite a few verification/validation checks. 
 - After the missing spot prices have been cached, then in a matter of seconds, the 2nd script will generate 4 different spreadsheets, each calculated using a different accounting method (FIFO, HIFO, LIFO, LOFO).
 - It will even highlight the different cells (in yellow) between the different accounting method files for you to identify EXACTLY where the biggest differences in profit/loss are between the different methods at the end of a given year.  [NOTE:  You can't just switch accounting methods if you've already been acquiring, holding for years... at least not easily.  You'd have to talk to a tax professional about that.  But...] For someone just now starting to file their taxes, this can definitely save you A TON of headache.  If you buy and sell crypto non-stop for a year, you would easily have more work cut out for you just wrapping your head around what is going on with those transactions from the past.
 
