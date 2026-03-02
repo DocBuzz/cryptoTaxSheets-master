@@ -28,6 +28,9 @@ from io import StringIO
 # Important date when LUNA became LUNC (Luna Classic)
 LUNA_TRANSITION_DATE = datetime(2022, 5, 28)
 
+# Decimal places for Amount columns in Excel (numeric format so Sum/Average work; 16 widely compatible, can use 24 if needed)
+AMOUNT_DECIMALS = 16
+
 # Add these constants near the top of the file with other style definitions
 CALCULATED_FILL = PatternFill(start_color='FFFF99', end_color='FFFF99', fill_type='solid')  # Light yellow
 HISTORICAL_FILL = PatternFill(start_color='FFB6B6', end_color='FFB6B6', fill_type='solid')  # Light red
@@ -764,7 +767,8 @@ def load_strike_transactions():
 
 def load_cashapp_transactions():
     # Load and process CashApp Bitcoin transactions
-    # Handles buys, sells, and transfers from CashApp's transaction report
+    # Handles buys, sells, transfers, and "paid" (spent crypto): when Transaction Type is blank
+    # but Notes contain "paid" (e.g. "bitcoin paid"), we treat as Type "Purchase" (sale for gains).
     try:
         # Find CashApp transaction files
         files = glob.glob("*.xlsx") + glob.glob("*.csv")
@@ -792,11 +796,17 @@ def load_cashapp_transactions():
             # Add file source to DataFrame
             df['Source File'] = file
             
-            # Filter rows based on Transaction Type and Status
-            df = df[
-                (df['Transaction Type'].str.startswith('Bitcoin', na=False)) & 
-                (df['Status'].fillna('') == 'COMPLETE')
-            ]
+            # Normalize Notes for filtering (CashApp may have blank Transaction Type with "paid" in Notes)
+            df['Notes'] = df['Notes'].fillna('').astype(str)
+            notes_lower = df['Notes'].str.lower()
+            has_paid_in_notes = notes_lower.str.contains('paid', na=False)
+            # Blank Transaction Type: nan, "nan", "NaN", or empty string
+            tx_type_str = df['Transaction Type'].fillna('').astype(str).str.strip().str.lower()
+            is_blank_tx_type = df['Transaction Type'].isna() | (tx_type_str.isin(['', 'nan']))
+            standard_bitcoin = df['Transaction Type'].str.startswith('Bitcoin', na=False)
+            # Include: (Transaction Type starts with Bitcoin) OR (blank Transaction Type and "paid" in Notes)
+            cashapp_include = (standard_bitcoin | (is_blank_tx_type & has_paid_in_notes)) & (df['Status'].fillna('') == 'COMPLETE')
+            df = df[cashapp_include]
             
             if df.empty:
                 continue
@@ -835,7 +845,7 @@ def load_cashapp_transactions():
             # Set Source
             df['Source'] = 'CashApp'
             
-            # Map Transaction Types
+            # Map Transaction Types (Purchase rows have no Transaction Type - set after we detect them)
             type_mapping = {
                 'Bitcoin Buy': 'Buy',
                 'Bitcoin Sell': 'Sell',
@@ -843,6 +853,9 @@ def load_cashapp_transactions():
                 'Bitcoin Send': 'Send'
             }
             df['Type'] = df['Transaction Type'].map(type_mapping)
+            # CashApp "paid" rows: blank Transaction Type but Notes say e.g. "bitcoin paid" -> treat as Purchase (spent crypto)
+            paid_mask = (df['Type'].isna()) & (df['Notes'].str.lower().str.contains('paid', na=False))
+            df.loc[paid_mask, 'Type'] = 'Purchase'
             
             # Generate IDs for missing Transaction IDs
             next_id = transaction_counter
@@ -854,43 +867,86 @@ def load_cashapp_transactions():
                     current_id = f'cashapp-{next_id:06d}'
                     next_id += 1
                     return current_id
-                    
-            df['ID'] = df['Transaction ID'].apply(generate_id)
+            tid_col = 'Transaction ID' if 'Transaction ID' in df.columns else df.columns[0]
+            df['ID'] = df[tid_col].apply(generate_id)
             # Update counter for next file
             transaction_counter = next_id
             
-            # Map other fields
-            df['Asset'] = df['Asset Type']
-            df['Spot Price'] = df['Asset Price'].apply(clean_price_string)
-            df['Fee'] = df['Fee'].apply(clean_price_string).fillna(0).abs()
+            # Asset: standard rows use Asset Type; Purchase (paid) rows have no Asset Type, use Currency (e.g. BTC)
+            if 'Asset Type' in df.columns:
+                df['Asset'] = df['Asset Type']
+            else:
+                df['Asset'] = ''
+            purchase_mask = (df['Type'] == 'Purchase')
+            if purchase_mask.any() and 'Currency' in df.columns:
+                df.loc[purchase_mask, 'Asset'] = df.loc[purchase_mask, 'Currency'].fillna('').astype(str).str.strip()
+            # Fallback for Purchase when Currency missing: infer from Notes (e.g. "bitcoin paid" -> BTC)
+            purchase_asset_blank = purchase_mask & (df['Asset'].isna() | (df['Asset'].astype(str).str.strip() == ''))
+            if purchase_asset_blank.any():
+                notes_lower = df.loc[purchase_asset_blank, 'Notes'].astype(str).str.lower()
+                df.loc[purchase_asset_blank & notes_lower.str.contains('bitcoin', na=False), 'Asset'] = 'BTC'
             
-            # Create a mask for Buy/Sell transactions
-            buy_sell_mask = df['Type'].isin(['Buy', 'Sell'])
+            # Resolve CashApp CSV columns (no "Subtotal"/"Total USD" cols; USD often "Net Amount", fee "Fee")
+            def _first_match(cols, names):
+                for n in names:
+                    for c in cols:
+                        if str(c).strip().lower() == n.lower():
+                            return c
+                return None
+            net_amount_col = _first_match(df.columns, ['net amount', 'netamount', 'total', 'amount (usd)', 'usd amount'])
+            fee_col = _first_match(df.columns, ['fee']) or ('Fee' if 'Fee' in df.columns else None)
             
-            # Handle Amount based on transaction type
-            df['Amount'] = df.apply(
-                lambda row: pd.to_numeric(row['Asset Amount'], errors='coerce')
-                if row['Type'] in ['Buy', 'Sell']
-                else pd.to_numeric(row['Amount'], errors='coerce'),
-                axis=1
-            ).fillna(0)
+            # Fee: from resolved column (0 for many Purchase rows)
+            if fee_col and fee_col in df.columns:
+                df['Fee'] = df[fee_col].apply(clean_price_string).fillna(0).abs()
+            else:
+                df['Fee'] = 0
             
-            # Handle Total USD and Subtotal based on transaction type
-            df['Total USD'] = df.apply(
-                lambda row: clean_price_string(row['Net Amount'])  # Use Net Amount for Total USD
-                if row['Type'] in ['Buy', 'Sell']
-                else 0,
-                axis=1
-            ).fillna(0).abs()
+            buy_sell_purchase = ['Buy', 'Sell', 'Purchase']
+            # Amount: standard rows use Asset Amount; Purchase rows have only "Amount"
+            def cashapp_amount(row):
+                if row['Type'] not in buy_sell_purchase:
+                    return pd.to_numeric(row.get('Amount', 0), errors='coerce')
+                if row['Type'] == 'Purchase':
+                    return pd.to_numeric(row['Amount'], errors='coerce')
+                if 'Asset Amount' in row.index:
+                    asset_amt = pd.to_numeric(row['Asset Amount'], errors='coerce')
+                    if pd.notna(asset_amt) and asset_amt != 0:
+                        return asset_amt
+                return pd.to_numeric(row.get('Amount', 0), errors='coerce')
+            df['Amount'] = df.apply(cashapp_amount, axis=1).fillna(0)
             
-            df['Subtotal'] = df.apply(
-                lambda row: clean_price_string(row['Net Amount']) - clean_price_string(row['Fee'])  # Calculate Subtotal as Net Amount - Fee
-                if row['Type'] in ['Buy', 'Sell']
-                else 0,
-                axis=1
-            ).abs()
+            # Total USD and Subtotal: for Purchase rows CSV has no USD columns -> leave NaN so they MUST be recalculated after Spot Price is fetched.
+            def cashapp_total_usd(row):
+                if row['Type'] not in buy_sell_purchase:
+                    return 0
+                if row['Type'] == 'Purchase':
+                    return float('nan')  # No value in CSV; must be recalculated from Amount * Spot Price later
+                net = clean_price_string(row.get(net_amount_col, 0) if net_amount_col else 0)
+                return abs(net) if net != 0 else 0
+            df['Total USD'] = df.apply(cashapp_total_usd, axis=1)
+            df.loc[df['Type'] != 'Purchase', 'Total USD'] = df.loc[df['Type'] != 'Purchase', 'Total USD'].fillna(0)
             
-            # Copy Notes
+            def cashapp_subtotal(row):
+                if row['Type'] not in buy_sell_purchase:
+                    return 0
+                if row['Type'] == 'Purchase':
+                    return float('nan')  # No value in CSV; must be recalculated from Amount * Spot Price later
+                net = clean_price_string(row.get(net_amount_col, 0) if net_amount_col else 0)
+                fee = clean_price_string(row.get(fee_col, 0))
+                return abs(net - fee) if net != 0 or fee != 0 else 0
+            df['Subtotal'] = df.apply(cashapp_subtotal, axis=1)
+            df.loc[df['Type'] != 'Purchase', 'Subtotal'] = df.loc[df['Type'] != 'Purchase', 'Subtotal'].fillna(0)
+            
+            # Spot Price: standard rows from Asset Price; Purchase rows have no Asset Price -> leave 0 so "Filling in the missing blanks..." will look it up
+            if 'Asset Price' in df.columns:
+                df['Spot Price'] = df['Asset Price'].apply(clean_price_string)
+            else:
+                df['Spot Price'] = 0.0
+            # CashApp Purchase (paid) rows: never use Asset Price from CSV; force 0 so historical price lookup runs in fill step
+            df.loc[df['Type'] == 'Purchase', 'Spot Price'] = 0.0
+            
+            # Copy Notes (already filled above; ensure no NaN)
             df['Notes'] = df['Notes'].fillna('')
             
             # Select and reorder columns
@@ -943,13 +999,13 @@ def standardize_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
         # Convert Type to lowercase for consistent comparison
         df['Type_lower'] = df['Type'].str.lower()
         
-        print("\n\nUnique transaction types:", df['Type_lower'].unique())
+        print("\n\nUnique transaction types:", list(df['Type_lower'].dropna().unique()))
         
         # Filter out Exchange Withdrawal rows
         df = df[~df['Type_lower'].str.contains('exchange withdrawal', na=False)]
         
-        # Define transaction type patterns
-        sell_patterns = ['sell', 'send', 'convert']
+        # Define transaction type patterns (purchase = spent crypto, same sign as sell)
+        sell_patterns = ['sell', 'send', 'convert', 'purchase']
         buy_patterns = ['buy', 'receive', 'reward', 'deposit', 'staking', 'dividend']
         
         # Create masks for different transaction types - with error checking
@@ -1043,6 +1099,12 @@ def process_kraken_groups(asset_df: pd.DataFrame) -> pd.DataFrame:
     # Convert back to DataFrame and sort
     return pd.DataFrame(non_kraken_rows).sort_values(['Timestamp', 'type_order'])
 
+def _type_sort_key_for_group(x):
+    """Return 0 for sell/purchase (sort first), 1 otherwise. Handles NaN Type (e.g. manual/CashApp)."""
+    t = ((str(x.get('Type', '') or '').lower() if pd.notna(x.get('Type')) else ''))
+    return 0 if t in ('sell', 'purchase') else 1
+
+
 def assign_lot_ids_and_group(df: pd.DataFrame, time_window_seconds: int = 90) -> pd.DataFrame:
     #Group similar transactions by source & type within time windows, assign lot IDs chronologically.
     df = df.copy()
@@ -1069,8 +1131,8 @@ def assign_lot_ids_and_group(df: pd.DataFrame, time_window_seconds: int = 90) ->
             
         asset_df = df[df['Asset'] == asset].copy()
         
-        # Add type ordering for same-timestamp transactions
-        asset_df['type_order'] = asset_df['Type'].str.lower().map({'sell': 0, 'buy': 1}).fillna(2)
+        # Add type ordering for same-timestamp transactions (purchase = spent crypto, same as sell)
+        asset_df['type_order'] = asset_df['Type'].str.lower().map({'sell': 0, 'purchase': 0, 'buy': 1}).fillna(2)
         
         # Process Kraken transactions first
         asset_df = process_kraken_groups(asset_df)
@@ -1089,8 +1151,8 @@ def assign_lot_ids_and_group(df: pd.DataFrame, time_window_seconds: int = 90) ->
                     current_group.append(row)
                 else:
                     if len(current_group) > 1:
-                        # Sort group by type before combining (sell first)
-                        current_group = sorted(current_group, key=lambda x: 0 if x['Type'].lower() == 'sell' else 1)
+                        # Sort group by type before combining (sell first); handle NaN Type (e.g. manual/CashApp)
+                        current_group = sorted(current_group, key=_type_sort_key_for_group)
                         all_groups.append(combine_transactions(pd.DataFrame(current_group)))
                     else:
                         all_groups.append(current_group[0])
@@ -1099,8 +1161,8 @@ def assign_lot_ids_and_group(df: pd.DataFrame, time_window_seconds: int = 90) ->
         # Handle last group
         if current_group:
             if len(current_group) > 1:
-                # Sort last group by type before combining (sell first)
-                current_group = sorted(current_group, key=lambda x: 0 if x['Type'].lower() == 'sell' else 1)
+                # Sort last group by type before combining (sell/purchase first); handle NaN Type
+                current_group = sorted(current_group, key=_type_sort_key_for_group)
                 all_groups.append(combine_transactions(pd.DataFrame(current_group)))
             else:
                 all_groups.append(current_group[0])
@@ -1115,8 +1177,8 @@ def assign_lot_ids_and_group(df: pd.DataFrame, time_window_seconds: int = 90) ->
     # Combine and sort all transactions
     result = pd.concat(result_dfs, ignore_index=True)
     
-    # Add type_order for final sorting
-    result['type_order'] = result['Type'].str.lower().map({'sell': 0, 'buy': 1}).fillna(2)
+    # Add type_order for final sorting (purchase = spent crypto, same as sell)
+    result['type_order'] = result['Type'].str.lower().map({'sell': 0, 'purchase': 0, 'buy': 1}).fillna(2)
     result = result.sort_values(['Timestamp', 'type_order']).reset_index(drop=True)
     result = result.drop('type_order', axis=1)
     
@@ -1131,7 +1193,8 @@ def assign_lot_ids_and_group(df: pd.DataFrame, time_window_seconds: int = 90) ->
         # Assign lot IDs sequentially for receiving transactions only
         lot_counter = 1
         for idx in result[asset_mask].index:
-            tx_type = result.loc[idx, 'Type'].lower()
+            type_val = result.loc[idx, 'Type']
+            tx_type = (str(type_val).lower() if pd.notna(type_val) else '')
             # Strict check: must be in receiving_types AND not contain 'sell'
             if tx_type in receiving_types and 'sell' not in tx_type:
                 result.loc[idx, 'Lot ID'] = f"{asset}-{lot_counter:05d}"
@@ -1260,6 +1323,10 @@ def get_historical_price(asset: str, timestamp: datetime) -> float:
         if timestamp >= LUNA_TRANSITION_DATE:
             asset = 'LUNA'
             display_name = 'LUNA2 (AKA: LUNA)'
+    elif asset == 'CORECHAIN':
+        # Coinbase uses CORECHAIN; CryptoCompare uses CORE
+        asset = 'CORE'
+        display_name = 'CORECHAIN (AKA: CORE)'
     
     print(f"\nLooking up price for {display_name} at {date_str}")
     
@@ -1484,30 +1551,38 @@ def update_missing_spot_prices(df: pd.DataFrame) -> pd.DataFrame:
                     df.loc[idx, 'Spot Price'] = float(strip_trailing_zeros(price))
                     historical_ids.add(row['ID'])  # Track transaction ID instead of index
     
-    # After updating spot prices, recalculate missing subtotals
+    # Recalculate missing subtotals (Subtotal/Total USD blank or 0) from Amount * Spot Price when we have both.
+    # Include rows where Subtotal is NaN or effectively 0 so CashApp Purchase (left as NaN) is always recalc'd.
     missing_subtotals = (
-        (df['Subtotal'] == 0) & 
-        (df['Amount'].fillna(0) != 0) & 
-        (df['Spot Price'].fillna(0) != 0)
+        (df['Subtotal'].isna() | (df['Subtotal'].fillna(0).abs() < 1e-12)) &
+        (df['Amount'].fillna(0).abs() > 1e-12) &
+        (df['Spot Price'].fillna(0) > 1e-12)
     )
+    
+    # Also force recalc for CashApp Purchase rows that have Amount and Spot Price (in case they were grouped or missed)
+    cashapp_purchase = (df['Source'].astype(str).str.strip() == 'CashApp') & (df['Type'].astype(str).str.strip().str.lower() == 'purchase')
+    cashapp_purchase_recalc = cashapp_purchase & (df['Amount'].fillna(0).abs() > 1e-12) & (df['Spot Price'].fillna(0) > 1e-12)
+    missing_subtotals = missing_subtotals | cashapp_purchase_recalc
     
     if missing_subtotals.any():
         print(f"\nRecalculating {missing_subtotals.sum()} missing subtotals...")
+        # Amount * Spot Price (Amount is signed: negative for sells/purchases, so Subtotal gets correct sign)
         df.loc[missing_subtotals, 'Subtotal'] = (
-            df.loc[missing_subtotals, 'Amount'] * 
-            df.loc[missing_subtotals, 'Spot Price']
+            df.loc[missing_subtotals, 'Amount'] * df.loc[missing_subtotals, 'Spot Price']
         )
         
-        # Track transaction IDs for subtotals calculated from historical prices
-        for idx in df[missing_subtotals].index:
-            if df.loc[idx, 'ID'] in historical_ids:
-                calculated['Subtotal'].add(df.loc[idx, 'ID'])
-                
-                # If Fee is 0, copy Subtotal to Total USD
-                row = df.loc[idx]
-                if (row['Fee'] == 0):
-                    df.loc[idx, 'Total USD'] = df.loc[idx, 'Subtotal']
-                    calculated['Total USD'].add(row['ID'])
+        # Set Total USD for all recalculated rows where Fee=0
+        recalc_idx = df.index[missing_subtotals]
+        zero_fee = (df.loc[recalc_idx, 'Fee'].fillna(0) == 0)
+        if zero_fee.any():
+            idxs = recalc_idx[zero_fee.values] if hasattr(zero_fee, 'values') else recalc_idx[zero_fee]
+            df.loc[idxs, 'Total USD'] = df.loc[idxs, 'Subtotal'].values
+        
+        # Track transaction IDs for highlighting
+        for idx in recalc_idx:
+            calculated['Subtotal'].add(df.loc[idx, 'ID'])
+            if df.loc[idx, 'Fee'] == 0 or (pd.isna(df.loc[idx, 'Fee']) or df.loc[idx, 'Fee'] == 0):
+                calculated['Total USD'].add(df.loc[idx, 'ID'])
     
     return df, historical_ids, calculated
 
@@ -1562,8 +1637,14 @@ def merge_all_transactions():
                 df['Notes'] = df['Notes'].fillna('')
                 df['Fee'] = df['Fee'].fillna(0)
                 df['Spot Price'] = df['Spot Price'].fillna(0)
-                df['Subtotal'] = df['Subtotal'].fillna(0)
-                df['Total USD'] = df['Total USD'].fillna(0)
+                # Leave Subtotal/Total USD as NaN for CashApp Purchase so they are recalculated after spot price fetch
+                if source == 'CashApp':
+                    not_purchase = (df['Type'].astype(str).str.strip().str.lower() != 'purchase')
+                    df.loc[not_purchase, 'Subtotal'] = df.loc[not_purchase, 'Subtotal'].fillna(0)
+                    df.loc[not_purchase, 'Total USD'] = df.loc[not_purchase, 'Total USD'].fillna(0)
+                else:
+                    df['Subtotal'] = df['Subtotal'].fillna(0)
+                    df['Total USD'] = df['Total USD'].fillna(0)
                 all_dfs.append(df)
                 df_sources.append(source)
         
@@ -1715,25 +1796,21 @@ def merge_all_transactions():
         
         # Ensure USD values are negative for buys and positive for sells
         for idx, row in all_transactions.iterrows():
-            if 'buy' in row['Type'].lower():
+            type_str = str(row['Type']).lower() if pd.notna(row['Type']) else ''
+            if 'buy' in type_str:
                 all_transactions.at[idx, 'Total USD'] = -abs(all_transactions.at[idx, 'Total USD'])
                 all_transactions.at[idx, 'Subtotal'] = -abs(all_transactions.at[idx, 'Subtotal'])
-            elif 'sell' in row['Type'].lower():
+            elif 'sell' in type_str:
                 all_transactions.at[idx, 'Total USD'] = abs(all_transactions.at[idx, 'Total USD'])
                 all_transactions.at[idx, 'Subtotal'] = abs(all_transactions.at[idx, 'Subtotal'])
 
-        # Save to Excel
-        with pd.ExcelWriter('ALL-MASTER-crypto-transactions.xlsx', engine='openpyxl') as writer:
-            # Convert only Amount column to string to preserve full precision
-            numeric_df = all_transactions.copy()
-            
-            # Only convert Amount to string with full precision
-            if 'Amount' in numeric_df.columns:
-                numeric_df['Amount'] = numeric_df['Amount'].apply(
-                    lambda x: format(Decimal(str(x)), 'f') if pd.notnull(x) else ''
-                )
-            
-            numeric_df.to_excel(writer, index=False, sheet_name='Transactions')
+        # Save to Excel: write to a temp file first, then atomically replace the target.
+        # This ensures no process holds the final file open, so LibreOffice/Excel can open it without "locked" warnings.
+        master_path = Path('ALL-MASTER-crypto-transactions.xlsx')
+        tmp_path = master_path.with_suffix('.xlsx.tmp')
+        with pd.ExcelWriter(tmp_path, engine='openpyxl') as writer:
+            # Keep Amount numeric so Sum/Average work; format_excel_worksheet will apply 16-decimal display
+            all_transactions.to_excel(writer, index=False, sheet_name='Transactions')
             
             # Get the worksheet
             worksheet = writer.sheets['Transactions']
@@ -1742,7 +1819,8 @@ def merge_all_transactions():
             format_excel_worksheet(worksheet, df=all_transactions, sheet_name='Transactions', 
                                calculated_cells=calculated_cells,
                                historical_cells=historical_cells)
-            
+        # Writer is fully closed here; atomically replace target so the final file is never held open by this process
+        tmp_path.replace(master_path)
         print(f"   DONE!!\n\nFile saved as...\n   ALL-MASTER-crypto-transactions.xlsx")
         
         # Create manual transactions template if it doesn't exist
@@ -1822,6 +1900,8 @@ def merge_all_transactions():
             print("###########################################################################################")
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Error merging transactions: {str(e)}")
 
 def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df: pd.DataFrame = None, sheet_name: str = '', calculated_cells=None, historical_cells=None):
@@ -1892,6 +1972,8 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         # Special handling for Notes column
         if header_value == 'Notes':
             final_width = min(base_width, 200)  # Cap Notes column at 200
+        elif header_value == 'Amount':
+            final_width = max(min(base_width, 100), 26)  # Wide enough for 16 decimals (e.g. 0.1234567890123456)
         else:
             final_width = min(base_width, 100)  # Other columns capped at 100
         
@@ -1907,26 +1989,10 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         header_value_lower = header_value.lower()
         for cell in column[1:]:  # Skip header
             if any(x in header_value_lower for x in ['price', 'usd', 'subtotal', 'fee']):
-                cell.number_format = '_($* #,##0.00_);[Red]_($* -#,##0.00_)'  # Left-aligned $ with red minus
-            elif header_value == 'Amount':  # Exact match for Amount column
-                if cell.value is not None:
-                    # Count significant decimal places in the actual value
-                    str_val = str(cell.value)
-                    if '.' in str_val:
-                        decimal_part = str_val.split('.')[1]
-                        # Find the last non-zero digit position
-                        last_nonzero = len(decimal_part)
-                        for i in range(len(decimal_part) - 1, -1, -1):
-                            if decimal_part[i] != '0':
-                                last_nonzero = i + 1
-                                break
-                        decimals = last_nonzero
-                        if decimals > 0:
-                            cell.number_format = f'#,##0.{"0" * decimals};[Red]-#,##0.{"0" * decimals}'
-                        else:
-                            cell.number_format = '#,##0;[Red]-#,##0'
-                    else:
-                        cell.number_format = '#,##0;[Red]-#,##0'
+                cell.number_format = '[$$-409]#,##0.00;[Red]-[$$-409]#,##0.00'  # USD: Excel + LibreOffice compatible
+            elif header_value == 'Amount':  # Numeric, up to 16 decimals, no trailing zeros (Sum/Average work)
+                decimals = AMOUNT_DECIMALS
+                cell.number_format = f'#,##0.{"#" * decimals};[Red]-#,##0.{"#" * decimals}'
             elif 'date' in header_value_lower:
                 cell.number_format = 'YYYY-MM-DD HH:MM:SS'
             elif 'timestamp' in header_value_lower:
@@ -1982,18 +2048,20 @@ def should_merge_transactions(tx1: Dict, tx2: Dict, time_threshold: int = 90) ->
         return False
     
     # Don't merge if either transaction is a Convert (they're already paired)
-    if 'Converted' in tx1.get('Notes', '') or 'Converted' in tx2.get('Notes', ''):
+    notes1 = str(tx1.get('Notes', '') or '')
+    notes2 = str(tx2.get('Notes', '') or '')
+    if 'Converted' in notes1 or 'Converted' in notes2:
         return False
     
     # Check if these are Kraken transactions
     if tx1['Source'] == 'Kraken' and tx2['Source'] == 'Kraken':
         # Only proceed with ordertxid matching if both have Notes with Order
         if ('Notes' in tx1 and 'Notes' in tx2 and 
-            'Order:' in tx1['Notes'] and 'Order:' in tx2['Notes']):
+            'Order:' in notes1 and 'Order:' in notes2):
             
-            # Extract ordertxid from Notes
-            ordertxid1 = tx1['Notes'].split('Order:')[1].split()[0]
-            ordertxid2 = tx2['Notes'].split('Order:')[1].split()[0]
+            # Extract ordertxid from Notes (notes1/notes2 already safe strings from above)
+            ordertxid1 = notes1.split('Order:')[1].split()[0]
+            ordertxid2 = notes2.split('Order:')[1].split()[0]
             
             # For Kraken, only check ordertxid match and basic criteria (ignore time)
             return (
@@ -2014,6 +2082,15 @@ def should_merge_transactions(tx1: Dict, tx2: Dict, time_threshold: int = 90) ->
         ((tx1['Amount'] > 0) == (tx2['Amount'] > 0))  # Same sign
     )
 
+def _safe_id_iterable(series_or_scalar):
+    """Return an iterable of IDs for set.update(); pandas can return a scalar for single-row selection."""
+    if hasattr(series_or_scalar, 'tolist'):
+        return series_or_scalar.tolist()
+    if hasattr(series_or_scalar, '__iter__') and not isinstance(series_or_scalar, (str, bytes)):
+        return list(series_or_scalar)
+    return [series_or_scalar]
+
+
 def fill_missing_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
     # Fill in missing transaction values and standardize data:
     # 1. Replace NaN/zero values with calculated values where possible
@@ -2030,15 +2107,17 @@ def fill_missing_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
         'Spot Price': set()
     }
     
-    # First pass:  Fill NaN values with appropriate defaults
+    # First pass:  Fill NaN with defaults (leave Subtotal/Total USD as NaN for CashApp Purchase so update_missing_spot_prices can recalc)
     df['Notes'] = df['Notes'].fillna('')
     df['Fee'] = df['Fee'].fillna(0)
     df['Spot Price'] = df['Spot Price'].fillna(0)
-    df['Subtotal'] = df['Subtotal'].fillna(0)
-    df['Total USD'] = df['Total USD'].fillna(0)
+    cashapp_purchase_mask = (df['Source'].astype(str).str.strip() == 'CashApp') & (df['Type'].astype(str).str.strip().str.lower() == 'purchase')
+    df.loc[~cashapp_purchase_mask, 'Subtotal'] = df.loc[~cashapp_purchase_mask, 'Subtotal'].fillna(0)
+    df.loc[~cashapp_purchase_mask, 'Total USD'] = df.loc[~cashapp_purchase_mask, 'Total USD'].fillna(0)
     
-    # Second pass:  Calculate Spot Price where missing
-    spot_price_mask = (df['Spot Price'] == 0) & (df['Amount'].fillna(0) != 0)
+    # Second pass:  Calculate Spot Price where missing (skip CashApp Purchase - they have no Subtotal/Total USD in CSV; API will fill)
+    cashapp_purchase = (df['Source'].astype(str).str.strip() == 'CashApp') & (df['Type'].astype(str).str.strip().str.lower() == 'purchase')
+    spot_price_mask = (df['Spot Price'] == 0) & (df['Amount'].fillna(0) != 0) & (~cashapp_purchase)
     
     # Try Subtotal first, then (Total USD - Fee), and Total USD as last resort
     subtotal_mask = spot_price_mask & (df['Subtotal'].fillna(0) != 0)
@@ -2047,25 +2126,25 @@ def fill_missing_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
     
     if subtotal_mask.any():
         df.loc[subtotal_mask, 'Spot Price'] = df.loc[subtotal_mask, 'Subtotal'].abs() / df.loc[subtotal_mask, 'Amount'].abs()
-        calculated['Spot Price'].update(df.loc[subtotal_mask, 'ID'])
+        calculated['Spot Price'].update(_safe_id_iterable(df.loc[subtotal_mask, 'ID']))
     
     if total_fee_mask.any():
         df.loc[total_fee_mask, 'Spot Price'] = (df.loc[total_fee_mask, 'Total USD'] - df.loc[total_fee_mask, 'Fee']).abs() / df.loc[total_fee_mask, 'Amount'].abs()
-        calculated['Spot Price'].update(df.loc[total_fee_mask, 'ID'])
+        calculated['Spot Price'].update(_safe_id_iterable(df.loc[total_fee_mask, 'ID']))
     
     if total_usd_mask.any():
         df.loc[total_usd_mask, 'Spot Price'] = df.loc[total_usd_mask, 'Total USD'].abs() / df.loc[total_usd_mask, 'Amount'].abs()
-        calculated['Spot Price'].update(df.loc[total_usd_mask, 'ID'])
+        calculated['Spot Price'].update(_safe_id_iterable(df.loc[total_usd_mask, 'ID']))
     
-    # Third pass:  Calculate Fee where missing but we have Total USD and Subtotal
-    fee_mask = (df['Fee'] == 0) & (df['Total USD'] != 0) & (df['Subtotal'] != 0)
+    # Third pass:  Calculate Fee where missing but we have Total USD and Subtotal (skip CashApp Purchase - Fee is known from CSV, e.g. 0)
+    fee_mask = (df['Fee'] == 0) & (df['Total USD'] != 0) & (df['Subtotal'] != 0) & (~cashapp_purchase)
     if fee_mask.any():
         calculated_fees = df.loc[fee_mask, 'Total USD'].abs() - df.loc[fee_mask, 'Subtotal'].abs()
         # Only update fees that are actually non-zero
         non_zero_fees = calculated_fees != 0
         if non_zero_fees.any():
             df.loc[fee_mask[fee_mask].index[non_zero_fees], 'Fee'] = calculated_fees[non_zero_fees]
-            calculated['Fee'].update(df.loc[fee_mask[fee_mask].index[non_zero_fees], 'ID'])
+            calculated['Fee'].update(_safe_id_iterable(df.loc[fee_mask[fee_mask].index[non_zero_fees], 'ID']))
     
     # Calculate Subtotal where missing but we have enough info
     subtotal_mask = (df['Subtotal'] == 0)
@@ -2073,25 +2152,25 @@ def fill_missing_transaction_values(df: pd.DataFrame) -> pd.DataFrame:
     total_fee_mask = subtotal_mask & (df['Total USD'] != 0) & (df['Fee'] != 0)
     if total_fee_mask.any():
         df.loc[total_fee_mask, 'Subtotal'] = df.loc[total_fee_mask, 'Total USD'] - df.loc[total_fee_mask, 'Fee'].abs()
-        calculated['Subtotal'].update(df.loc[total_fee_mask, 'ID'])
+        calculated['Subtotal'].update(_safe_id_iterable(df.loc[total_fee_mask, 'ID']))
     
     amount_price_mask = subtotal_mask & ~total_fee_mask & (df['Amount'] != 0) & (df['Spot Price'] != 0)
     if amount_price_mask.any():
         df.loc[amount_price_mask, 'Subtotal'] = df.loc[amount_price_mask, 'Amount'] * df.loc[amount_price_mask, 'Spot Price']
-        calculated['Subtotal'].update(df.loc[amount_price_mask, 'ID'])
+        calculated['Subtotal'].update(_safe_id_iterable(df.loc[amount_price_mask, 'ID']))
         
         # For rows where we calculated Subtotal from historical price and Fee is 0,
         # copy Subtotal to Total USD
         zero_fee_mask = amount_price_mask & (df['Fee'] == 0)
         if zero_fee_mask.any():
             df.loc[zero_fee_mask, 'Total USD'] = df.loc[zero_fee_mask, 'Subtotal']
-            calculated['Total USD'].update(df.loc[zero_fee_mask, 'ID'])
+            calculated['Total USD'].update(_safe_id_iterable(df.loc[zero_fee_mask, 'ID']))
     
     # Finally, calculate any remaining missing Total USD from Subtotal and Fee
     total_mask = (df['Total USD'] == 0)
     if total_mask.any():
         df.loc[total_mask, 'Total USD'] = df.loc[total_mask, 'Subtotal'].abs() + df.loc[total_mask, 'Fee'].abs()
-        calculated['Total USD'].update(df.loc[total_mask, 'ID'])
+        calculated['Total USD'].update(_safe_id_iterable(df.loc[total_mask, 'ID']))
     
     return df, calculated
 

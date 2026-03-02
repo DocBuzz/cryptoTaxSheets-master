@@ -30,6 +30,20 @@ LUNA_TRANSITION_DATE = datetime(2022, 5, 28)
 # Important date constant: When NU stopped working on Coinbase (Feb 6, 2023). 1 NU is worth 3.26 T
 NU_TRANSITION_DATE = datetime(2023, 2, 6)
 
+# Decimal places for Amount/Total Amount columns in Excel (numeric format so Sum/Average work; 16 widely compatible, can use 24 if needed)
+AMOUNT_DECIMALS = 16
+
+
+def _safe_fee(val) -> Decimal:
+    """Convert a Fee value from row/dict to Decimal; handles None/NaN. Used for Total Fees Paid on Current Holdings."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return Decimal('0')
+    try:
+        return abs(Decimal(str(val)))
+    except Exception:
+        return Decimal('0')
+
+
 # Set up logging to only create the log file if an error is actually logged
 class ErrorOnlyFileHandler(logging.FileHandler):
     #Only creates the log file if an error is actually logged
@@ -80,6 +94,7 @@ class TransactionType(Enum):
 
     BUY = 'buy'
     SELL = 'sell'
+    PURCHASE = 'purchase'  # Spent crypto (e.g. CashApp "paid"); treated as sale for gains
     ADVANCED_TRADE_BUY = 'advanced trade buy'
     ADVANCED_TRADE_SELL = 'advanced trade sell'
     CONVERT = 'convert'
@@ -129,6 +144,8 @@ class TransactionType(Enum):
             return cls.BUY
         if 'sell' in clean_value:
             return cls.SELL
+        if 'purchase' in clean_value:
+            return cls.PURCHASE
         if 'convert' in clean_value:
             return cls.CONVERT
         if 'stake' in clean_value or 'staking' in clean_value:
@@ -158,6 +175,7 @@ class AssetLot:
     # - transaction_id: Unique ID from the exchange
     # - lot_id: Our internal tracking ID
     # - gift_market_value: For gifts, tracks the market value when received
+    # - fee: Fee in USD paid on this acquisition (for Total Fees Paid on Current Holdings)
 
     timestamp: datetime
     amount: Decimal
@@ -168,6 +186,7 @@ class AssetLot:
     transaction_id: str
     lot_id: str
     gift_market_value: Optional[Decimal] = None
+    fee: Decimal = Decimal('0')
     
     def __post_init__(self):
         # After creating a new lot, calculate the cost per unit.
@@ -513,7 +532,11 @@ class AssetTracker:
         # Basic calculations
         total_amount = sum(lot.remaining for lot in valid_lots)
         total_cost_basis = sum(lot.remaining * lot.cost_per_unit for lot in valid_lots)
-        total_fees = sum(lot.cost_basis - (lot.amount * lot.cost_per_unit) for lot in valid_lots)
+        # Total fees paid on acquisitions that are still in holdings (allocated by remaining fraction)
+        total_fees = sum(
+            lot.fee * (lot.remaining / lot.amount) if lot.amount > 0 else Decimal('0')
+            for lot in valid_lots
+        )
         
         # Get all lots with remaining amounts
         lots_with_balance = [lot for lot in valid_lots if lot.remaining > 0]
@@ -622,7 +645,8 @@ class AssetTracker:
             transaction_type=TransactionType.DEPOSIT,
             remaining=deposit['amount'],
             transaction_id=f"{deposit['transaction_id']}_from_{matching_send['transaction_id']}",
-            lot_id=deposit['lot_id']
+            lot_id=deposit['lot_id'],
+            fee=deposit.get('fee', Decimal('0'))
         )
         self.add_lot(lot)
         
@@ -831,12 +855,24 @@ class TransactionProcessor:
                     transaction_type=tx_type,
                     remaining=abs(Decimal(str(row['Amount']))),
                     transaction_id=row['ID'],
-                    lot_id=row['Lot ID']
+                    lot_id=row['Lot ID'],
+                    fee=_safe_fee(row.get('Fee'))
                 )
                 tracker.add_lot(lot)
             
             elif tx_type == TransactionType.SELL:
                 # Handle sales
+                sale_info = {
+                    'timestamp': row['Timestamp'],
+                    'amount': abs(Decimal(str(row['Amount']))),
+                    'proceeds': abs(Decimal(str(row['Subtotal']))),
+                    'source': row['Source'],
+                    'transaction_id': row['ID']
+                }
+                tracker.process_sale(sale_info)
+            
+            elif tx_type == TransactionType.PURCHASE:
+                # Spent crypto (e.g. CashApp "bitcoin paid"); same as sale for cost basis / gains
                 sale_info = {
                     'timestamp': row['Timestamp'],
                     'amount': abs(Decimal(str(row['Amount']))),
@@ -866,7 +902,8 @@ class TransactionProcessor:
                     transaction_type=tx_type,
                     remaining=abs(Decimal(str(row['Amount']))),
                     transaction_id=row['ID'],
-                    lot_id=row['Lot ID']
+                    lot_id=row['Lot ID'],
+                    fee=_safe_fee(row.get('Fee'))
                 )
                 tracker.add_lot(lot)
                 
@@ -893,6 +930,7 @@ class TransactionProcessor:
                     transaction_id=row['ID'],
                     lot_id=row['Lot ID'],
                     gift_market_value=abs(Decimal(str(row['Total USD']))),  # Store market value for future sales
+                    fee=_safe_fee(row.get('Fee'))
                 )
                 tracker.add_lot(lot)
                 
@@ -917,6 +955,7 @@ class TransactionProcessor:
                     'transaction_id': row['ID'],
                     'lot_id': row['Lot ID'],
                     'total_usd': abs(Decimal(str(row['Total USD']))),  # Add this line to include Total USD
+                    'fee': _safe_fee(row.get('Fee'))
                 }
                 
                 matching_send = tracker.find_matching_send(deposit_info)
@@ -932,7 +971,8 @@ class TransactionProcessor:
                         transaction_type=tx_type,
                         remaining=abs(Decimal(str(row['Amount']))),
                         transaction_id=row['ID'],
-                        lot_id=row['Lot ID']
+                        lot_id=row['Lot ID'],
+                        fee=_safe_fee(row.get('Fee'))
                     )
                     tracker.add_lot(lot)
             
@@ -971,7 +1011,8 @@ class TransactionProcessor:
                         transaction_type=tx_type,
                         remaining=received_asset['amount'],
                         transaction_id=row['ID'] + '_BUY',
-                        lot_id=row['Lot ID']
+                        lot_id=row['Lot ID'],
+                        fee=_safe_fee(row.get('Fee'))
                     )
                     received_tracker.add_lot(lot)
             
@@ -985,7 +1026,8 @@ class TransactionProcessor:
                     transaction_type=tx_type,
                     remaining=abs(Decimal(str(row['Amount']))),
                     transaction_id=row['ID'],
-                    lot_id=row['Lot ID']
+                    lot_id=row['Lot ID'],
+                    fee=_safe_fee(row.get('Fee'))
                 )
                 tracker.add_lot(lot)
             
@@ -1225,11 +1267,20 @@ def generate_excel_report(yearly_data: Dict, processor: TransactionProcessor, su
     try:
         with pd.ExcelWriter(f'ALL-crypto-profit-and-loss{suffix}.xlsx', engine='openpyxl') as writer:
             # Add accounting method info sheet
-            method_info = pd.DataFrame([{
-                'Accounting Method': processor.accounting_method.value,
-                'Processing Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'Warning': 'This method must be used consistently across tax years'
-            }])
+            method_info = pd.DataFrame([
+                {
+                    'Accounting Method': processor.accounting_method.value,
+                    'Processing Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'Warning': 'This method must be used consistently across tax years'
+                },
+                {
+                },
+                {
+                    'Accounting Method': '(Optional) Donate to',
+                    'Processing Date': 'Bitcoin Address:',
+                    'Warning': 'bc1qfhe46gxujnuhgm3qcfzhj4u2wfy4jq8g8f0mka'
+                }
+            ])
             method_info.to_excel(writer, sheet_name='Method Info', index=False)
             format_excel_worksheet(writer.sheets['Method Info'], method_info, 'Method Info')  # Changed
             
@@ -1803,6 +1854,10 @@ def get_historical_price(asset: str, timestamp: datetime, current: int = None, t
     elif asset == 'CGLD':
         asset = 'CELO'
         display_name = 'CGLD (AKA: CELO)'
+    elif asset == 'CORECHAIN':
+        # Coinbase uses CORECHAIN; CryptoCompare uses CORE
+        asset = 'CORE'
+        display_name = 'CORECHAIN (AKA: CORE)'
        
     # Determine if we have an API KEY to use minute-level price data
     use_minute_data = CRYPTOCOMPARE_API_KEY and CRYPTOCOMPARE_API_KEY != 'YOUR-API-KEY-HERE'
@@ -2301,6 +2356,7 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         col_letter = column[0].column_letter
         header_cell = column[0]
         header_value = str(header_cell.value)
+        header_value_lower = header_value.lower()
         header_length = len(header_value)
         max_content_length = column_content_lengths[col_letter]
         
@@ -2332,6 +2388,10 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         else:
             final_width = min(max(content_width, header_width + extra_width, 10), 100)
         
+        # Amount/Total Amount columns: ensure width fits 16 decimals
+        if 'amount' in header_value_lower:
+            final_width = max(final_width, 26)
+        
         # Set column width
         worksheet.column_dimensions[col_letter] = openpyxl.worksheet.dimensions.ColumnDimension(
             worksheet, 
@@ -2341,36 +2401,20 @@ def format_excel_worksheet(worksheet: openpyxl.worksheet.worksheet.Worksheet, df
         )
         
         # Apply number formatting to data cells
-        header_value_lower = header_value.lower()
         for cell in column[1:]:  # Skip header
             # Skip percentage columns
             if '%' in header_value_lower or 'percent' in header_value_lower:
                 cell.number_format = '0.00%;[Red]-0.00%'  # Percentage with red negatives
             # Special handling for any column containing 'loss' or 'total fees'
             elif 'loss' in header_value_lower or 'total fees' in header_value_lower:
-                cell.number_format = '_($* #,##0.00_);[Red]_($* -#,##0.00_)'  # Left-aligned $ with red minus
+                cell.number_format = '[$$-409]#,##0.00;[Red]-[$$-409]#,##0.00'  # USD: Excel + LibreOffice compatible
             # Regular handling for other monetary columns
             elif any(x in header_value_lower for x in ['price', 'cost', 'basis', 'proceeds', 'usd', 'fees']):
-                cell.number_format = openpyxl.styles.numbers.BUILTIN_FORMATS[44]  # Standard currency format
+                cell.number_format = '[$$-409]#,##0.00;[Red]-[$$-409]#,##0.00'  # USD: Excel + LibreOffice compatible
             elif 'amount' in header_value_lower:
-                if cell.value is not None:
-                    # Count significant decimal places in the actual value
-                    str_val = str(cell.value)
-                    if '.' in str_val:
-                        decimal_part = str_val.split('.')[1]
-                        # Find the last non-zero digit position
-                        last_nonzero = len(decimal_part)
-                        for i in range(len(decimal_part) - 1, -1, -1):
-                            if decimal_part[i] != '0':
-                                last_nonzero = i + 1
-                                break
-                        decimals = last_nonzero
-                        if decimals > 0:
-                            cell.number_format = f'#,##0.{"0" * decimals}'
-                        else:
-                            cell.number_format = '#,##0'
-                    else:
-                        cell.number_format = '#,##0'
+                # Amount/Total Amount/Amount Sold etc.: numeric, up to 16 decimals, no trailing zeros (Sum/Average work)
+                decimals = AMOUNT_DECIMALS
+                cell.number_format = f'#,##0.{"#" * decimals};[Red]-#,##0.{"#" * decimals}'
             elif 'date range' in header_value_lower:
                 cell.alignment = openpyxl.styles.Alignment(horizontal='right')
             elif 'timestamp' in header_value_lower:
@@ -2527,6 +2571,8 @@ def main():
 
         # Report any issues found during processing
         report_issues(all_issues)
+
+        print("\nIF THIS SOFTWARE HELPS YOU.... consider donating Bitcoin to the following address: bc1qfhe46gxujnuhgm3qcfzhj4u2wfy4jq8g8f0mka\n")
 
     except Exception as e:
         log_error(f"Error in main execution: {str(e)}")
